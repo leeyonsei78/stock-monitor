@@ -1,0 +1,63 @@
+# ==========================================
+# KIS (한국투자증권) API 설정
+# ==========================================
+kis:
+  mock_base_url: "https://openapivts.koreainvestment.com:29443"
+  real_base_url: "https://openapi.koreainvestment.com:9443"
+  mock_ws_url: "ws://ops.koreainvestment.com:31000"
+  real_ws_url: "ws://ops.koreainvestment.com:21000"
+  token_expire_hours: 24
+
+# ==========================================
+# 매매 기본 설정
+# ==========================================
+trading:
+  mode: "manual"                 # "auto" | "manual"
+  market: "KSE"                  # KSE(코스피) | KOSDAQ
+  max_stocks: 5                  # 동시 보유 최대 종목 수
+  max_budget_per_stock: 1000000  # 종목당 최대 투자금 (원)
+  total_budget: 5000000          # 총 투자 예산 (원)
+  fee_rate: 0.00015              # 증권사 수수료율
+  tax_rate: 0.0018               # 증권거래세 (매도 시)
+
+# ==========================================
+# 운영 시간
+# ==========================================
+schedule:
+  market_open: "09:00"
+  market_close: "15:30"
+  pre_market_check: "08:50"     # 장 시작 전 종목 스크리닝 시간
+  scan_interval_seconds: 30      # 실시간 스캔 주기 (초)
+  signal_interval_seconds: 60   # 매매 신호 체크 주기 (초)
+
+# ==========================================
+# 리스크 관리
+# ==========================================
+risk:
+  stop_loss_pct: -3.0            # 손절 기준 (%)
+  take_profit_pct: 5.0           # 익절 기준 (%)
+  trailing_stop_pct: 2.0         # 트레일링 스탑 (%)
+  max_daily_loss_pct: -5.0       # 일일 최대 손실 한도 (%)
+  position_sizing: "fixed"       # "fixed" | "volatility" | "equal_weight"
+
+# ==========================================
+# 실시간 모니터 설정
+# ==========================================
+monitor:
+  scan_top_n: 30               # 거래량 상위 N개 종목 스캔
+  scan_interval_sec: 300       # 스캔 주기 (초, 기본 5분)
+  alert_cooldown_sec: 1800     # 동일 종목 재알림 쿨다운 (초, 기본 30분)
+  watchlist:                   # 항상 감시할 종목 (종목코드 6자리)
+    - "005930"                 # 삼성전자
+    - "000660"                 # SK하이닉스
+    - "035420"                 # NAVER
+    - "051910"                 # LG화학
+
+# ==========================================
+# 로그 설정
+# ==========================================
+logging:
+  level: "INFO"                  # DEBUG | INFO | WARNING | ERROR
+  file: "logs/trading.log"
+  max_bytes: 10485760            # 10MB
+  backup_count: 5

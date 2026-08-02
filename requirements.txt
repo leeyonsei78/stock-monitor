@@ -1,0 +1,29 @@
+# KIS API & HTTP
+requests>=2.31.0
+websockets>=12.0
+aiohttp>=3.11.0
+
+# 데이터 처리
+numpy>=2.2.6
+pandas>=2.3.2
+
+# 기술적 분석
+pandas-ta>=0.4.71b0
+
+# Slack
+slack-bolt>=1.18.0
+slack-sdk>=3.27.0
+
+# 스케줄러
+APScheduler>=3.10.0
+
+# 설정 파일
+PyYAML>=6.0.2
+python-dotenv>=1.0.0
+
+# 로깅
+colorlog>=6.8.0
+
+# 유틸
+python-dateutil>=2.9.0
+pytz>=2024.1

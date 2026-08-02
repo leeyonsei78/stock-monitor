@@ -22,7 +22,8 @@ jobs:
           cache: 'pip'
 
       - name: 패키지 설치
-        run: pip install -r requirements.txt --only-binary=:all:
+        run: |
+          pip install -r requirements.txt
 
       - name: 주식 모니터 실행
         env:

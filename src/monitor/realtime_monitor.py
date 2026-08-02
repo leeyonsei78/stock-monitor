@@ -40,7 +40,7 @@ class RealtimeMonitor:
     - 매수/매도 신호 발생 시 Slack 알림 (쿨다운: 30분)
     """
 
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml", store=None):
         with open(config_path, "r", encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)
 
@@ -54,8 +54,9 @@ class RealtimeMonitor:
         self._api      = KISApi()
         self._signal   = SignalGenerator()
         self._notifier = SlackNotifier()
+        self._store    = store  # SupabaseSignalStore or None (in-memory fallback)
 
-        # {ticker: (last_signal_type, last_alerted_at)}
+        # in-memory 쿨다운 (Supabase 미사용 시)
         self._last_alert: dict[str, tuple[str, datetime]] = {}
         self._running = False
 
@@ -71,17 +72,22 @@ class RealtimeMonitor:
     # ── 쿨다운 체크 ──────────────────────────────────────────────
     def _should_alert(self, ticker: str, signal_type: SignalType) -> bool:
         """동일 종목 동일 신호는 쿨다운 시간 내 재발송 안 함"""
+        if self._store:
+            return self._store.should_alert(ticker, signal_type.value)
+        # in-memory fallback
         if ticker not in self._last_alert:
             return True
         last_sig, last_time = self._last_alert[ticker]
         elapsed = (datetime.now() - last_time).total_seconds()
         if elapsed >= self._cooldown_sec:
             return True
-        # 신호 방향이 바뀌면 즉시 재발송
         return last_sig != signal_type.value
 
-    def _mark_alerted(self, ticker: str, signal_type: SignalType):
-        self._last_alert[ticker] = (signal_type.value, datetime.now())
+    def _mark_alerted(self, ticker: str, signal_type: SignalType, score: float = 0, price: int = 0):
+        if self._store:
+            self._store.save_signal(ticker, signal_type.value, score, price)
+        else:
+            self._last_alert[ticker] = (signal_type.value, datetime.now())
 
     # ── 추천가 / 추천 수량 계산 ──────────────────────────────────
     def _calc_recommendation(self, signal: TradeSignal) -> dict:
@@ -293,7 +299,7 @@ class RealtimeMonitor:
         )
 
         self._notifier.send_sync(msg)
-        self._mark_alerted(ticker, signal.signal_type)
+        self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price)
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
             f"(점수 {signal.score:+.3f})"

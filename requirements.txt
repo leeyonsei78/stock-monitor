@@ -27,3 +27,6 @@ colorlog>=6.8.0
 # 유틸
 python-dateutil>=2.9.0
 pytz>=2024.1
+
+# Supabase
+supabase>=2.0.0

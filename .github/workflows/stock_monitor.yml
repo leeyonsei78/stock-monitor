@@ -1,0 +1,37 @@
+name: 실시간 주식 모니터
+
+on:
+  schedule:
+    # 평일 09:00~15:30 KST (UTC 00:00~06:30) 5분마다 실행
+    - cron: '*/5 0-6 * * 1-5'
+  workflow_dispatch:  # 수동 실행 버튼
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4  # 5분 이내 완료 보장
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt --only-binary :all:
+
+      - name: 주식 모니터 실행
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_IS_MOCK: 'true'
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python run_monitor_once.py

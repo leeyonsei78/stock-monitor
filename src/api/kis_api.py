@@ -27,7 +27,10 @@ class KISApi:
         self._account_no = os.getenv("KIS_ACCOUNT_NO")
         self._is_mock = os.getenv("KIS_IS_MOCK", "true").lower() == "true"
 
+        # 주문/잔고: mock 환경이면 mock URL
         self._base_url = self._cfg["mock_base_url"] if self._is_mock else self._cfg["real_base_url"]
+        # 시세 조회(일봉·분봉·현재가 등): mock 여부 무관하게 항상 실전 URL
+        self._quote_url = self._cfg["real_base_url"]
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
 
@@ -82,9 +85,10 @@ class KISApi:
         )
         return resp.json().get("HASH", "")
 
-    def _get(self, path: str, tr_id: str, params: dict) -> dict:
+    def _get(self, path: str, tr_id: str, params: dict, base: str = None) -> dict:
+        url = (base or self._base_url) + path
         resp = requests.get(
-            f"{self._base_url}{path}",
+            url,
             headers=self._headers(tr_id),
             params=params,
         )
@@ -113,6 +117,7 @@ class KISApi:
             "/uapi/domestic-stock/v1/quotations/inquire-price",
             "FHKST01010100",
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+            base=self._quote_url,
         )
         out = data["output"]
         return {
@@ -129,34 +134,24 @@ class KISApi:
         }
 
     def get_daily_ohlcv(self, ticker: str, period: int = 120) -> list[dict]:
-        """일봉 데이터 조회 (최근 N일)"""
+        """일봉 데이터 조회 — FinanceDataReader(KRX 공개 데이터, API 키 불필요)"""
+        import FinanceDataReader as fdr
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=period * 2)).strftime("%Y%m%d")
-        data = self._get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-chartprice",
-            "FHKST03010100",
-            {
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_DATE_1": start_date,
-                "FID_INPUT_DATE_2": end_date,
-                "FID_PERIOD_DIV_CODE": "D",
-                "FID_ORG_ADJ_PRC": "0",
-            },
-        )
+        df = fdr.DataReader(ticker, start_date, end_date)
+        if df is None or df.empty:
+            return []
         result = []
-        for row in data.get("output2", []):
-            if not row.get("stck_bsop_date"):
-                continue
+        for date, row in df.iterrows():
             result.append({
-                "date": row["stck_bsop_date"],
-                "open": int(row.get("stck_oprc", 0)),
-                "high": int(row.get("stck_hgpr", 0)),
-                "low": int(row.get("stck_lwpr", 0)),
-                "close": int(row.get("stck_clpr", 0)),
-                "volume": int(row.get("acml_vol", 0)),
+                "date":   date.strftime("%Y%m%d"),
+                "open":   int(row.get("Open", 0)),
+                "high":   int(row.get("High", 0)),
+                "low":    int(row.get("Low", 0)),
+                "close":  int(row.get("Close", 0)),
+                "volume": int(row.get("Volume", 0)),
             })
-        return sorted(result, key=lambda x: x["date"])
+        return result  # fdr은 날짜 오름차순 반환
 
     def get_minute_ohlcv(self, ticker: str, interval: int = 1) -> list[dict]:
         """분봉 데이터 조회"""
@@ -170,6 +165,7 @@ class KISApi:
                 "FID_INPUT_HOUR_1": datetime.now().strftime("%H%M%S"),
                 "FID_PW_DATA_INCU_YN": "N",
             },
+            base=self._quote_url,
         )
         result = []
         for row in data.get("output2", []):
@@ -366,6 +362,7 @@ class KISApi:
                 "FID_VOL_CNT": "",
                 "FID_INPUT_DATE_1": "",
             },
+            base=self._quote_url,
         )
         result = []
         for row in data.get("output", [])[:limit]:

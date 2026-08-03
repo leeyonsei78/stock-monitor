@@ -279,10 +279,16 @@ class RealtimeMonitor:
             current_info     = self._api.get_current_price(ticker)
             ohlcv            = self._api.get_daily_ohlcv(ticker, period=120)
             investor_current = self._api.get_investor_trading(ticker)
-            investor_hist    = self._api.get_investor_trading_history(ticker, days=10)
         except Exception as e:
             logger.warning(f"[{ticker}] 데이터 조회 실패: {e}")
             return None
+
+        # 투자자 히스토리 실패 시 빈 리스트로 대체 (중립 점수 처리됨)
+        investor_hist = []
+        try:
+            investor_hist = self._api.get_investor_trading_history(ticker, days=10)
+        except Exception as e:
+            logger.debug(f"[{ticker}] 투자자 히스토리 조회 실패 (중립 처리): {e}")
 
         if len(ohlcv) < 60:
             logger.debug(f"[{ticker}] OHLCV 데이터 부족 ({len(ohlcv)}일)")

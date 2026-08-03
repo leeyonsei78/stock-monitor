@@ -30,3 +30,6 @@ pytz>=2024.1
 
 # Supabase
 supabase>=2.0.0
+
+# 한국거래소 시세 데이터 (일봉, API 키 불필요)
+finance-datareader>=0.9.50

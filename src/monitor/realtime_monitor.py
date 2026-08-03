@@ -301,6 +301,7 @@ class RealtimeMonitor:
                 ohlcv=ohlcv,
                 investor_current=investor_current,
                 investor_history=investor_hist,
+                realtime_price=current_info.get("price", 0),
             )
         except Exception as e:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
@@ -379,7 +380,7 @@ class RealtimeMonitor:
             top_vol = self._api.get_top_volume_stocks(limit=self._scan_top_n)
             watchlist_tickers = {s["ticker"] for s in stocks}
             for s in top_vol:
-                if s["ticker"] not in watchlist_tickers:
+                if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
                     stocks.append({"ticker": s["ticker"], "name": s["name"]})
         except Exception as e:
             logger.error(f"거래량 상위 조회 실패: {e}")

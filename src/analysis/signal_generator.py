@@ -87,6 +87,7 @@ class SignalGenerator:
         investor_history: list[dict],
         holding_qty: int = 0,
         avg_price: float = 0,
+        realtime_price: int = 0,
     ) -> TradeSignal:
         """종합 매매 신호 생성"""
         tech_result = self._tech.get_technical_score(ohlcv)
@@ -101,7 +102,9 @@ class SignalGenerator:
         final_score = max(-1.0, min(1.0, final_score))
 
         ind = tech_result["indicators"]
-        current_price = int(ind.get("current_price", 0))
+        # KIS API 실시간 가격 우선, 없으면 OHLCV 마지막 종가 사용
+        current_price = realtime_price if realtime_price > 0 else int(ind.get("current_price", 0))
+        ind["current_price"] = current_price  # Slack 메시지에도 반영
 
         signal_type, reason = self._classify_signal(
             final_score, tech_result, inv_result, holding_qty, avg_price, current_price

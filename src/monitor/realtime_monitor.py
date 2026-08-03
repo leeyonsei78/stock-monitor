@@ -134,6 +134,102 @@ class RealtimeMonitor:
                 "stop_loss":  None,
             }
 
+    # ── 매매 이유 설명 생성 ──────────────────────────────────────
+    @staticmethod
+    def _build_reason_bullets(
+        signal: TradeSignal,
+        investor_current: dict,
+        investor_history: dict,
+    ) -> list[str]:
+        bullets: list[str] = []
+        ind = signal.indicators
+        is_buy  = signal.signal_type in (SignalType.BUY, SignalType.STRONG_BUY)
+        is_sell = signal.signal_type in (SignalType.SELL, SignalType.STRONG_SELL)
+
+        rsi       = ind.get("rsi", 50)
+        macd_h    = ind.get("macd_histogram", 0)
+        bb_pct    = ind.get("bb_pct", 0.5)
+        vol_ratio = ind.get("volume_ratio", 1.0)
+        ma5, ma20, ma60 = ind.get("ma5", 0), ind.get("ma20", 0), ind.get("ma60", 0)
+
+        fgn     = investor_current.get("foreign", 0)
+        inst    = investor_current.get("institution", 0)
+        prog    = investor_current.get("program", 0)
+        fstreak = investor_history.get("foreign_streak", 0)
+        istreak = investor_history.get("institution_streak", 0)
+
+        # RSI
+        if rsi <= 20:
+            bullets.append(f"RSI {rsi:.0f} — 극도 과매도, 강한 기술적 반등 가능성")
+        elif rsi <= 30:
+            bullets.append(f"RSI {rsi:.0f} — 과매도 구간, 반등 시도 예상")
+        elif rsi <= 45 and is_buy:
+            bullets.append(f"RSI {rsi:.0f} — 저점권, 추가 하락 여력 제한적")
+        elif rsi >= 80:
+            bullets.append(f"RSI {rsi:.0f} — 극도 과매수, 급락 조정 위험")
+        elif rsi >= 70 and is_sell:
+            bullets.append(f"RSI {rsi:.0f} — 과매수 구간, 차익 실현 압력")
+
+        # 외국인
+        if fgn > 0:
+            streak_txt = f", {fstreak}일 연속 순매수 지속 중" if fstreak >= 2 else ""
+            bullets.append(f"외국인이 {fgn:+,}주 순매수{streak_txt}")
+        elif fgn < 0:
+            streak_txt = f", {abs(fstreak)}일 연속 순매도 지속 중" if fstreak <= -2 else ""
+            bullets.append(f"외국인이 {fgn:+,}주 순매도{streak_txt}")
+
+        # 기관
+        if inst > 0:
+            streak_txt = f", {istreak}일 연속 순매수" if istreak >= 2 else ""
+            bullets.append(f"기관이 {inst:+,}주 순매수{streak_txt}")
+        elif inst < 0:
+            streak_txt = f", {abs(istreak)}일 연속 순매도" if istreak <= -2 else ""
+            bullets.append(f"기관이 {inst:+,}주 순매도{streak_txt}")
+
+        # 프로그램
+        if prog > 0 and is_buy:
+            bullets.append(f"프로그램 매수 {prog:+,}주 — 기관성 자금 유입")
+        elif prog < 0 and is_sell:
+            bullets.append(f"프로그램 매도 {prog:+,}주 — 기관성 자금 이탈")
+
+        # 거래량
+        if vol_ratio >= 3.0:
+            bullets.append(f"거래량 평균의 {vol_ratio:.1f}배 — 세력 개입 의심")
+        elif vol_ratio >= 2.0:
+            bullets.append(f"거래량 평균의 {vol_ratio:.1f}배 — 거래 급증, 시장 관심 집중")
+        elif vol_ratio >= 1.3 and is_buy:
+            bullets.append(f"거래량 평균의 {vol_ratio:.1f}배 — 매수 관심 증가")
+
+        # MACD
+        if macd_h > 0 and is_buy:
+            bullets.append("MACD 히스토그램 상승 — 단기 매수 모멘텀 확인")
+        elif macd_h < 0 and is_sell:
+            bullets.append("MACD 히스토그램 하락 — 단기 매도 모멘텀 확인")
+
+        # 볼린저밴드
+        if bb_pct <= 0.05:
+            bullets.append("볼린저밴드 하단 이탈 — 단기 과매도 극단 구간")
+        elif bb_pct <= 0.2 and is_buy:
+            bullets.append(f"볼린저밴드 하단 근접({bb_pct:.2f}) — 반등 가능 구간")
+        elif bb_pct >= 0.95:
+            bullets.append("볼린저밴드 상단 이탈 — 단기 과열 극단 구간")
+        elif bb_pct >= 0.8 and is_sell:
+            bullets.append(f"볼린저밴드 상단 근접({bb_pct:.2f}) — 과열 매도 구간")
+
+        # 이평선 정배열/역배열
+        if ma5 > 0 and ma20 > 0 and ma60 > 0:
+            price = signal.current_price
+            if ma5 > ma20 > ma60:
+                bullets.append("MA5 > MA20 > MA60 정배열 — 상승 추세 유효")
+            elif ma5 < ma20 < ma60:
+                bullets.append("MA5 < MA20 < MA60 역배열 — 하락 추세 지속")
+            elif price < ma20 and is_sell:
+                bullets.append(f"20일 이평선({ma20:,.0f}원) 하향 이탈 — 지지선 붕괴")
+            elif price > ma20 and is_buy:
+                bullets.append(f"20일 이평선({ma20:,.0f}원) 위에서 지지 유지")
+
+        return bullets
+
     # ── 슬랙 메시지 포맷 ─────────────────────────────────────────
     def _format_slack_message(
         self,
@@ -267,8 +363,10 @@ class RealtimeMonitor:
                 f"{op}"
             )
 
-        # ── 판단 근거 ──
-        reason_block = f"📝 *판단 근거:* {signal.reason}"
+        # ── 판단 근거 (상세 설명) ──
+        bullets = self._build_reason_bullets(signal, investor_current, investor_history)
+        bullet_lines = "\n".join(f"• {b}" for b in bullets) if bullets else ""
+        reason_block = f"📝 *매매 이유*\n{bullet_lines}" if bullet_lines else f"📝 *판단 근거:* {signal.reason}"
 
         # ── 추천 액션 ──
         rec_lines = [f"💡 *추천 액션*"]

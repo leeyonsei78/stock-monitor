@@ -4,7 +4,7 @@
 """
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, Any
 import yaml
 from src.utils.logger import setup_logger
 from src.analysis.technical_indicators import TechnicalIndicators
@@ -206,3 +206,68 @@ class SignalGenerator:
             return SignalType.BUY, " / ".join(buy_reasons)
 
         return SignalType.HOLD, "매매 조건 미충족"
+
+    def generate_opinion(
+        self,
+        signal: TradeSignal,
+        intraday_change_pct: float,
+        five_min_change_pct: Optional[float],
+        minute_candles: list[dict],
+    ) -> dict:
+        """당일 등락률 + 5분 변화율 + 분봉 모멘텀을 종합한 의견 생성"""
+        minute_momentum = self._tech.calc_minute_momentum(minute_candles)
+
+        direction    = minute_momentum.get("direction", "알수없음")
+        acceleration = minute_momentum.get("acceleration", "알수없음")
+
+        is_buy  = signal.signal_type in (SignalType.BUY, SignalType.STRONG_BUY)
+        is_sell = signal.signal_type in (SignalType.SELL, SignalType.STRONG_SELL)
+
+        intraday_up   = intraday_change_pct > 0.5
+        intraday_down = intraday_change_pct < -0.5
+
+        five_up   = five_min_change_pct is not None and five_min_change_pct > 0.05
+        five_down = five_min_change_pct is not None and five_min_change_pct < -0.05
+
+        minute_up   = direction == "상승"
+        minute_down = direction == "하락"
+        accel = acceleration == "가속"
+        decel = acceleration == "감속"
+
+        if is_buy:
+            if intraday_up and (five_up or minute_up) and accel:
+                opinion, confidence = "단기·중기 모멘텀 완전 일치 — 적극적 매수 타이밍", "높음"
+            elif intraday_up and (five_up or minute_up):
+                opinion, confidence = "단기·중기 모멘텀 일치 — 매수 타이밍 유효", "높음"
+            elif intraday_down and minute_down:
+                opinion, confidence = "일봉 매수 신호지만 당일 하락 중 — 추가 하락 후 반등 대기 권장", "낮음"
+            elif decel:
+                opinion, confidence = "단기 모멘텀 둔화 중 — 진입 신중, 추가 확인 권장", "보통"
+            elif intraday_down:
+                opinion, confidence = "일봉 매수 신호, 당일 하락 중 — 저점 매수 기회일 수 있음", "보통"
+            else:
+                opinion, confidence = "일봉 기준 매수 타이밍 — 단기 모멘텀 확인 후 진입", "보통"
+
+        elif is_sell:
+            if intraday_down and (five_down or minute_down) and accel:
+                opinion, confidence = "단기·중기 하락 모멘텀 일치 — 즉시 매도 고려", "높음"
+            elif intraday_up and minute_up:
+                opinion, confidence = "일봉 매도 신호, 당일 반등 중 — 반등 고점에서 매도 타이밍 포착", "보통"
+            elif decel and minute_down:
+                opinion, confidence = "하락 모멘텀 둔화 — 단기 반등 가능성 주의 (분할 매도 권장)", "보통"
+            else:
+                opinion, confidence = "일봉 기준 매도 타이밍 — 분할 매도 고려", "보통"
+
+        else:
+            opinion, confidence = "관망 구간", "보통"
+
+        confidence_emoji = {"높음": "🟢", "보통": "🟡", "낮음": "🔴"}.get(confidence, "🟡")
+
+        return {
+            "opinion": opinion,
+            "confidence": confidence,
+            "confidence_emoji": confidence_emoji,
+            "intraday_change_pct": intraday_change_pct,
+            "five_min_change_pct": five_min_change_pct,
+            "minute_momentum": minute_momentum,
+        }

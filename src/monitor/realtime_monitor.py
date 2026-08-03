@@ -133,6 +133,7 @@ class RealtimeMonitor:
         investor_current: dict,
         investor_history: dict,
         rec: dict,
+        opinion_data: Optional[dict] = None,
     ) -> str:
         emoji = SIGNAL_EMOJI[signal.signal_type]
         ind   = signal.indicators
@@ -217,6 +218,41 @@ class RealtimeMonitor:
             f"기술점수: {signal.tech_score:+.3f}  |  수급점수: {signal.investor_score:+.3f}"
         )
 
+        # ── 단기 모멘텀 + 종합 의견 ──
+        momentum_block = ""
+        if opinion_data:
+            mm   = opinion_data.get("minute_momentum", {})
+            idcp = opinion_data.get("intraday_change_pct", 0.0)
+            fmcp = opinion_data.get("five_min_change_pct")
+            op   = opinion_data.get("opinion", "")
+            conf = opinion_data.get("confidence", "보통")
+            cemoji = opinion_data.get("confidence_emoji", "🟡")
+
+            id_sign = "+" if idcp >= 0 else ""
+            id_arrow = "📈" if idcp >= 0 else "📉"
+
+            five_str = ""
+            if fmcp is not None:
+                fm_sign = "+" if fmcp >= 0 else ""
+                fm_arrow = "↑" if fmcp >= 0 else "↓"
+                five_str = f"  |  5분 변화: *{fm_sign}{fmcp:.2f}%* {fm_arrow}"
+
+            mm_desc = mm.get("description", "-")
+            mm_dir  = mm.get("direction", "-")
+            mm_accel = mm.get("acceleration", "-")
+            rates = mm.get("change_rates", [])
+            rates_str = " → ".join(f"{r:+.2f}%" for r in rates) if rates else "-"
+
+            momentum_block = (
+                f"⚡ *단기 모멘텀*\n"
+                f"당일 등락: *{id_sign}{idcp:.2f}%* {id_arrow}{five_str}\n"
+                f"분봉 추세: {mm_desc}\n"
+                f"분봉 변화율: {rates_str}\n"
+                f"\n"
+                f"🧠 *종합 의견*  신뢰도: {cemoji} {conf}\n"
+                f"{op}"
+            )
+
         # ── 판단 근거 ──
         reason_block = f"📝 *판단 근거:* {signal.reason}"
 
@@ -231,21 +267,11 @@ class RealtimeMonitor:
 
         # ── 조합 ──
         sep = "─" * 32
-        return "\n".join([
-            header,
-            sep,
-            vol_block,
-            "",
-            investor_block,
-            "",
-            tech_block,
-            "",
-            reason_block,
-            "",
-            rec_block,
-            sep,
-            f"⏰ _{now_str}_",
-        ])
+        blocks = [header, sep, vol_block, "", investor_block, "", tech_block]
+        if momentum_block:
+            blocks += ["", momentum_block]
+        blocks += ["", reason_block, "", rec_block, sep, f"⏰ _{now_str}_"]
+        return "\n".join(blocks)
 
     # ── 단일 종목 분석 ────────────────────────────────────────────
     def _analyze_stock(self, ticker: str, name: str) -> Optional[TradeSignal]:
@@ -278,6 +304,29 @@ class RealtimeMonitor:
         if signal.signal_type == SignalType.HOLD:
             return signal
 
+        # ── 단기 모멘텀 데이터 수집 (매수/매도 신호 종목만) ──
+        intraday_change_pct = current_info.get("change_pct", 0.0)
+
+        five_min_change_pct: Optional[float] = None
+        if self._store:
+            last_price = self._store.get_last_price(ticker)
+            if last_price and last_price > 0 and signal.current_price > 0:
+                five_min_change_pct = (signal.current_price - last_price) / last_price * 100
+
+        minute_candles: list = []
+        try:
+            minute_candles = self._api.get_minute_ohlcv(ticker)
+        except Exception as e:
+            logger.warning(f"[{ticker}] 분봉 조회 실패: {e}")
+
+        opinion_data = self._signal.generate_opinion(
+            signal, intraday_change_pct, five_min_change_pct, minute_candles
+        )
+
+        # 직전 가격 저장 (다음 실행 시 5분 변화율 계산용)
+        if self._store:
+            self._store.save_price_snapshot(ticker, signal.current_price)
+
         if not self._should_alert(ticker, signal.signal_type):
             logger.debug(
                 f"[{ticker}] 쿨다운 중 - {signal.signal_type.value} 알림 건너뜀"
@@ -288,7 +337,6 @@ class RealtimeMonitor:
         if not rec:
             return signal
 
-        # 투자자 히스토리 분석 결과 (streak 등)
         inv_history_analysis = signal.investor_detail.get("history", {})
 
         msg = self._format_slack_message(
@@ -297,13 +345,17 @@ class RealtimeMonitor:
             investor_current=investor_current,
             investor_history=inv_history_analysis,
             rec=rec,
+            opinion_data=opinion_data,
         )
 
         self._notifier.send_sync(msg)
         self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price)
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
-            f"(점수 {signal.score:+.3f})"
+            f"(점수 {signal.score:+.3f}) / 당일{intraday_change_pct:+.2f}% / "
+            f"5분{five_min_change_pct:+.2f}%" if five_min_change_pct is not None
+            else f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
+            f"(점수 {signal.score:+.3f}) / 당일{intraday_change_pct:+.2f}%"
         )
         return signal
 

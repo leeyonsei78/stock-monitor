@@ -191,6 +191,81 @@ class TechnicalIndicators:
             "signal": signal,
         }
 
+    # ── 분봉 모멘텀 ─────────────────────────────────────────────
+    def calc_minute_momentum(self, minute_candles: list[dict]) -> dict:
+        """최근 분봉 기반 단기 모멘텀 분석 (API는 최신순 반환 → 역순 처리)"""
+        if len(minute_candles) < 3:
+            return {
+                "score": 0.0, "direction": "데이터부족",
+                "acceleration": "알수없음", "change_rates": [],
+                "description": "분봉 데이터 부족",
+            }
+
+        # API가 최신순으로 반환 → 시간순으로 뒤집어 최근 10개만 사용
+        candles = list(reversed(minute_candles[:10]))
+
+        change_rates = []
+        for c in candles:
+            o, cl = c.get("open", 0), c.get("close", 0)
+            if o > 0:
+                change_rates.append(round((cl - o) / o * 100, 4))
+
+        if not change_rates:
+            return {
+                "score": 0.0, "direction": "알수없음",
+                "acceleration": "알수없음", "change_rates": [],
+                "description": "분봉 데이터 오류",
+            }
+
+        recent = change_rates[-5:] if len(change_rates) >= 5 else change_rates
+        avg_rate = sum(recent) / len(recent)
+
+        pos = sum(1 for r in recent if r > 0)
+        neg = sum(1 for r in recent if r < 0)
+        if pos >= len(recent) * 0.7:
+            direction = "상승"
+        elif neg >= len(recent) * 0.7:
+            direction = "하락"
+        else:
+            direction = "횡보"
+
+        # 앞 절반 vs 뒷 절반 비교로 가속/감속 판단
+        if len(recent) >= 4:
+            mid = len(recent) // 2
+            f_avg = sum(recent[:mid]) / mid
+            s_avg = sum(recent[mid:]) / (len(recent) - mid)
+            if s_avg > f_avg + 0.02:
+                acceleration = "가속"
+            elif s_avg < f_avg - 0.02:
+                acceleration = "감속"
+            else:
+                acceleration = "유지"
+        else:
+            acceleration = "유지"
+
+        score = max(-1.0, min(1.0, avg_rate * 10))
+
+        desc_map = {
+            ("상승", "가속"):  f"최근 {len(recent)}분봉 상승 가속 🔥",
+            ("상승", "감속"):  f"상승 모멘텀 둔화 (최근 {len(recent)}분봉)",
+            ("상승", "유지"):  f"상승 유지 (최근 {len(recent)}분봉)",
+            ("하락", "가속"):  f"최근 {len(recent)}분봉 하락 가속 ⚠️",
+            ("하락", "감속"):  f"하락 둔화 — 반등 가능성",
+            ("하락", "유지"):  f"하락 지속 (최근 {len(recent)}분봉)",
+            ("횡보", "가속"):  f"횡보 후 변동성 확대",
+            ("횡보", "감속"):  f"횡보 (변동성 감소)",
+            ("횡보", "유지"):  f"횡보 중 (최근 {len(recent)}분봉)",
+        }
+        description = desc_map.get((direction, acceleration), f"{direction} ({acceleration})")
+
+        return {
+            "score": round(score, 3),
+            "direction": direction,
+            "acceleration": acceleration,
+            "change_rates": recent,
+            "description": description,
+        }
+
     # ── 종합 기술적 점수 ─────────────────────────────────────────
     def get_technical_score(self, ohlcv: list[dict]) -> dict:
         """모든 지표를 종합한 기술적 분석 점수 반환"""

@@ -3,6 +3,7 @@ Supabase 기반 신호 저장소
 GitHub Actions 실행 간 쿨다운 상태 공유
 """
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from supabase import create_client, Client
 from src.utils.logger import setup_logger
 
@@ -46,3 +47,31 @@ class SupabaseSignalStore:
             }).execute()
         except Exception as e:
             logger.error(f"Supabase 신호 저장 실패 [{ticker}]: {e}")
+
+    # ── 5분 변화율 추적 ──────────────────────────────────────────
+    def save_price_snapshot(self, ticker: str, price: int):
+        """직전 스캔 가격 저장 (5분 변화율 계산용)"""
+        try:
+            self._client.table("stock_price_snapshot").upsert({
+                "ticker": ticker,
+                "price": price,
+                "scanned_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+        except Exception as e:
+            logger.error(f"Supabase 가격 스냅샷 저장 실패 [{ticker}]: {e}")
+
+    def get_last_price(self, ticker: str) -> Optional[int]:
+        """직전 스캔 가격 조회 (5분 변화율 계산용)"""
+        try:
+            result = (
+                self._client.table("stock_price_snapshot")
+                .select("price, scanned_at")
+                .eq("ticker", ticker)
+                .execute()
+            )
+            if result.data:
+                return int(result.data[0]["price"])
+            return None
+        except Exception as e:
+            logger.error(f"Supabase 가격 스냅샷 조회 실패 [{ticker}]: {e}")
+            return None

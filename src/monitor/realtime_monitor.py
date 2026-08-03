@@ -290,8 +290,8 @@ class RealtimeMonitor:
         except Exception as e:
             logger.debug(f"[{ticker}] 투자자 히스토리 조회 실패 (중립 처리): {e}")
 
-        if len(ohlcv) < 60:
-            logger.debug(f"[{ticker}] OHLCV 데이터 부족 ({len(ohlcv)}일)")
+        if len(ohlcv) < 30:
+            logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
             return None
 
         try:
@@ -387,19 +387,20 @@ class RealtimeMonitor:
 
         buy_signals  = []
         sell_signals = []
+        skipped      = 0
         errors       = 0
 
         for stock in stocks:
             try:
                 sig = self._analyze_stock(stock["ticker"], stock["name"])
                 if sig is None:
-                    errors += 1
+                    skipped += 1
                     continue
                 if sig.signal_type in (SignalType.BUY, SignalType.STRONG_BUY):
                     buy_signals.append(sig)
                 elif sig.signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
                     sell_signals.append(sig)
-                time.sleep(0.3)   # API 호출 간격
+                time.sleep(0.3)
             except Exception as e:
                 logger.error(f"[{stock['ticker']}] 분석 중 예외: {e}")
                 errors += 1
@@ -408,7 +409,7 @@ class RealtimeMonitor:
             f"=== 스캔 완료: 총 {len(stocks)}개 | "
             f"매수신호 {len(buy_signals)}개 | "
             f"매도신호 {len(sell_signals)}개 | "
-            f"오류 {errors}개 ==="
+            f"스킵 {skipped}개 | 오류 {errors}개 ==="
         )
 
     # ── 메인 루프 ────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import time
 import os
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 import yaml
 
@@ -63,7 +64,7 @@ class RealtimeMonitor:
     # ── 시장 시간 판단 ────────────────────────────────────────────
     @staticmethod
     def _is_market_open() -> bool:
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
         if now.weekday() >= 5:
             return False
         t = (now.hour, now.minute)

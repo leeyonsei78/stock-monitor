@@ -5,6 +5,7 @@ GitHub Actions용 단일 실행 스크립트
 import os
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -19,7 +20,7 @@ MARKET_CLOSE = (15, 30)
 
 
 def is_market_open() -> bool:
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
     if now.weekday() >= 5:
         return False
     t = (now.hour, now.minute)
@@ -29,7 +30,7 @@ def is_market_open() -> bool:
 def main():
     # 장 시간 체크 (GitHub Actions 크론이 UTC 기준이라 코드에서도 확인)
     if not is_market_open():
-        logger.info(f"장 외 시간 ({datetime.now().strftime('%H:%M')}) - 종료")
+        logger.info(f"장 외 시간 ({datetime.now(ZoneInfo('Asia/Seoul')).strftime('%H:%M KST')}) - 종료")
         return
 
     supabase_url = os.getenv("SUPABASE_URL")

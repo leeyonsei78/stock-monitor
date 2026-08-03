@@ -19,8 +19,10 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("monitor")
 
-MARKET_OPEN  = (9, 0)
-MARKET_CLOSE = (15, 30)
+MARKET_OPEN       = (8, 30)   # 장전 시간외 시작
+MARKET_CLOSE      = (18, 0)   # 시간외 종료
+REGULAR_OPEN      = (9, 0)
+REGULAR_CLOSE     = (15, 30)
 
 SIGNAL_EMOJI = {
     SignalType.STRONG_BUY:  "🚀",
@@ -69,6 +71,13 @@ class RealtimeMonitor:
             return False
         t = (now.hour, now.minute)
         return MARKET_OPEN <= t < MARKET_CLOSE
+
+    @staticmethod
+    def _is_after_hours() -> bool:
+        """정규장(09:00~15:30) 외 시간 여부 (장전/장후 시간외 포함)"""
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        t = (now.hour, now.minute)
+        return t < REGULAR_OPEN or t >= REGULAR_CLOSE
 
     # ── 쿨다운 체크 ──────────────────────────────────────────────
     def _should_alert(self, ticker: str, signal_type: SignalType) -> bool:
@@ -134,18 +143,20 @@ class RealtimeMonitor:
         investor_history: dict,
         rec: dict,
         opinion_data: Optional[dict] = None,
+        is_after_hours: bool = False,
     ) -> str:
         emoji = SIGNAL_EMOJI[signal.signal_type]
         ind   = signal.indicators
         inv_h = investor_history
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M KST")
 
         # ── 헤더 ──
         change_pct = current_info.get("change_pct", 0)
         change_sign = "+" if change_pct >= 0 else ""
+        ah_badge = "  ⏰ _시간외_" if is_after_hours else ""
         header = (
-            f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker})*\n"
+            f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker})*{ah_badge}\n"
             f"현재가: *{signal.current_price:,}원*  (전일比 {change_sign}{change_pct:.2f}%)"
             f"  |  신호점수: *{signal.score:+.3f}*"
         )
@@ -237,17 +248,20 @@ class RealtimeMonitor:
                 fm_arrow = "↑" if fmcp >= 0 else "↓"
                 five_str = f"  |  5분 변화: *{fm_sign}{fmcp:.2f}%* {fm_arrow}"
 
-            mm_desc = mm.get("description", "-")
-            mm_dir  = mm.get("direction", "-")
-            mm_accel = mm.get("acceleration", "-")
-            rates = mm.get("change_rates", [])
-            rates_str = " → ".join(f"{r:+.2f}%" for r in rates) if rates else "-"
+            if is_after_hours:
+                minute_line = "분봉 추세: 시간외 — 데이터 미제공"
+                rates_line  = ""
+            else:
+                mm_desc = mm.get("description", "분봉 데이터 부족")
+                rates   = mm.get("change_rates", [])
+                rates_str = " → ".join(f"{r:+.2f}%" for r in rates) if rates else "-"
+                minute_line = f"분봉 추세: {mm_desc}"
+                rates_line  = f"\n분봉 변화율: {rates_str}"
 
             momentum_block = (
                 f"⚡ *단기 모멘텀*\n"
                 f"당일 등락: *{id_sign}{idcp:.2f}%* {id_arrow}{five_str}\n"
-                f"분봉 추세: {mm_desc}\n"
-                f"분봉 변화율: {rates_str}\n"
+                f"{minute_line}{rates_line}\n"
                 f"\n"
                 f"🧠 *종합 의견*  신뢰도: {cemoji} {conf}\n"
                 f"{op}"
@@ -312,6 +326,7 @@ class RealtimeMonitor:
             return signal
 
         # ── 단기 모멘텀 데이터 수집 (매수/매도 신호 종목만) ──
+        after_hours = self._is_after_hours()
         intraday_change_pct = current_info.get("change_pct", 0.0)
 
         five_min_change_pct: Optional[float] = None
@@ -320,11 +335,13 @@ class RealtimeMonitor:
             if last_price and last_price > 0 and signal.current_price > 0:
                 five_min_change_pct = (signal.current_price - last_price) / last_price * 100
 
+        # 시간외에는 분봉 없음
         minute_candles: list = []
-        try:
-            minute_candles = self._api.get_minute_ohlcv(ticker)
-        except Exception as e:
-            logger.warning(f"[{ticker}] 분봉 조회 실패: {e}")
+        if not after_hours:
+            try:
+                minute_candles = self._api.get_minute_ohlcv(ticker)
+            except Exception as e:
+                logger.warning(f"[{ticker}] 분봉 조회 실패: {e}")
 
         opinion_data = self._signal.generate_opinion(
             signal, intraday_change_pct, five_min_change_pct, minute_candles
@@ -353,6 +370,7 @@ class RealtimeMonitor:
             investor_history=inv_history_analysis,
             rec=rec,
             opinion_data=opinion_data,
+            is_after_hours=after_hours,
         )
 
         self._notifier.send_sync(msg)

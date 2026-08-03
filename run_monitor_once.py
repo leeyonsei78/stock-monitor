@@ -15,8 +15,8 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("run_once")
 
-MARKET_OPEN  = (9, 0)
-MARKET_CLOSE = (15, 30)
+MARKET_OPEN  = (8, 30)   # 장전 시간외 시작
+MARKET_CLOSE = (18, 0)   # 시간외 종료
 
 
 def is_market_open() -> bool:

@@ -2,7 +2,7 @@
 
 ## 프로젝트 개요
 KIS Open API 기반 실시간 주식 모니터링 + Slack 알림 시스템.
-GitHub Actions에서 5분마다 자동 실행, Supabase로 쿨다운 관리.
+GitHub Actions에서 30분마다 자동 실행, Supabase로 쿨다운 및 토큰 관리.
 
 ## 실행 방법
 
@@ -18,15 +18,20 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 ```
 
 ### GitHub Actions (자동, PC 불필요)
-- 평일 08:30~18:00 KST 5분마다 자동 실행 (장전·정규장·장후 시간외 포함)
+- 평일 08:00~18:00 KST 30분마다 자동 실행 (장전·정규장·장후 시간외 포함)
 - `run_monitor_once.py` 한 번 실행 후 종료
 - Supabase `stock_signal_log` 테이블로 쿨다운 관리
+- Supabase `stock_kis_token_cache` 테이블로 KIS 토큰 캐싱 (1일 1회 발급 제한 대응)
 
 #### GitHub Actions 크론 (UTC 기준)
 ```yaml
-- cron: '30,35,40,45,50,55 23 * * 0-4'  # 장전: KST 08:30~08:55 (일~목 UTC)
-- cron: '*/5 0-8 * * 1-5'               # 정규장+장후: KST 09:00~17:55 (월~금 UTC)
+- cron: '0,30 23 * * 0-4'   # 장전: KST 08:00, 08:30 (일~목 UTC) — 08:00은 버퍼
+- cron: '0,30 0-8 * * 1-5'  # 정규장+장후: KST 09:00~17:30 (월~금 UTC)
 ```
+
+#### venv 캐싱
+- `.venv` 전체를 `requirements.txt` 해시 기준으로 캐싱
+- `requirements.txt` 변경이 없으면 패키지 설치 단계 완전 스킵
 
 ## 핵심 설정 파일
 
@@ -34,7 +39,7 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 ```yaml
 monitor:
   scan_top_n: 30             # 거래량 상위 N개 스캔
-  scan_interval_sec: 300     # 스캔 간격 (초)
+  scan_interval_sec: 1800    # 스캔 간격 (초, 30분)
   alert_cooldown_sec: 1800   # 알림 쿨다운 (초, 30분)
   watchlist:                 # 항상 감시할 종목
     - "005930"               # 삼성전자
@@ -104,10 +109,15 @@ git push origin main
 8. **추천 액션**: 매수가/매도가, 수량, 목표가, 손절가
 
 ## 시간외 거래 처리
-- 장전(08:30~09:00) / 장후(15:30~18:00) 시간외에도 분석 실행
+- 장전(08:00~09:00) / 장후(15:30~18:00) 시간외에도 분석 실행
 - 시간외 시 분봉 데이터 조회 생략 (API 미제공)
 - Slack 메시지에 ⏰ 시간외 배지 표시, 분봉 추세 항목에 "시간외 — 데이터 미제공" 표시
 - 당일 등락률 / 5분 변화율 / 종합 의견은 정상 표시
+
+## KIS API 안정성
+- 액세스 토큰 Supabase 캐싱 (`stock_kis_token_cache`): 실행 간 재사용, 신규 발급 최소화
+- `ConnectionError` / `Timeout` 발생 시 3회 자동 재시도 (3초·6초 간격)
+- 모든 API 요청 timeout 10초
 
 ## OHLCV 데이터 주의사항
 - KIS 모의 API는 일봉 데이터(`inquire-daily-chartprice`) 미지원 → **FinanceDataReader**로 대체
@@ -117,6 +127,7 @@ git push origin main
 ## Supabase 테이블
 - `stock_signal_log`: 알림 쿨다운 관리
 - `stock_price_snapshot`: 종목별 직전 가격 저장 (5분 변화율 계산용)
+- `stock_kis_token_cache`: KIS 액세스 토큰 캐싱 (id=1 단일 행, RLS 비활성화 필요)
 
 ## 환경변수 (.env)
 ```
@@ -141,7 +152,7 @@ SUPABASE_KEY=sb_secret_...
 ```
 C:\test_stock_auto\
 ├── run_monitor.py          # 로컬 실행 (루프)
-├── run_monitor_once.py     # GitHub Actions 실행 (1회), 08:30~18:00 KST
+├── run_monitor_once.py     # GitHub Actions 실행 (1회), 08:00~18:00 KST
 ├── config/
 │   ├── config.yaml         # 운영 설정
 │   └── strategy.yaml       # 매매 신호 기준
@@ -153,7 +164,7 @@ C:\test_stock_auto\
     │   └── signal_generator.py       # 매매 신호 + 종합 의견 생성
     ├── monitor/
     │   ├── realtime_monitor.py       # 실시간 모니터 핵심 + Slack 메시지 포맷
-    │   └── supabase_store.py         # 쿨다운 DB + 가격 스냅샷 관리
+    │   └── supabase_store.py         # 쿨다운 DB + 가격 스냅샷 + 토큰 캐시
     ├── notification/slack_bot.py     # Slack 알림
     └── trading/
         ├── order_manager.py          # 주문 실행

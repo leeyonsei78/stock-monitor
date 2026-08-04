@@ -80,7 +80,7 @@ class SupabaseSignalStore:
     def save_access_token(self, token: str, expires_at: datetime):
         """KIS 액세스 토큰 Supabase에 저장 (실행 간 재사용)"""
         try:
-            self._client.table("kis_token_cache").upsert({
+            self._client.table("stock_kis_token_cache").upsert({
                 "id": 1,
                 "access_token": token,
                 "expires_at": expires_at.isoformat(),
@@ -92,7 +92,7 @@ class SupabaseSignalStore:
         """KIS 액세스 토큰 조회 (유효 시 재사용)"""
         try:
             result = (
-                self._client.table("kis_token_cache")
+                self._client.table("stock_kis_token_cache")
                 .select("access_token, expires_at")
                 .eq("id", 1)
                 .execute()

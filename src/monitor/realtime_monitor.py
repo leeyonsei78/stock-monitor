@@ -19,7 +19,7 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("monitor")
 
-MARKET_OPEN       = (8, 30)   # 장전 시간외 시작
+MARKET_OPEN       = (8, 0)    # 장전 시간외 시작 (08:00 버퍼 트리거 포함)
 MARKET_CLOSE      = (18, 0)   # 시간외 종료
 REGULAR_OPEN      = (9, 0)
 REGULAR_CLOSE     = (15, 30)

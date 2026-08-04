@@ -7,6 +7,7 @@ import json
 import time
 import hashlib
 import requests
+from requests.exceptions import ConnectionError as ReqConnError, Timeout as ReqTimeout
 from datetime import datetime, timedelta
 from typing import Optional
 import yaml
@@ -18,7 +19,7 @@ logger = setup_logger("kis_api")
 
 
 class KISApi:
-    def __init__(self):
+    def __init__(self, store=None):
         with open("config/config.yaml", "r", encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)["kis"]
 
@@ -33,15 +34,27 @@ class KISApi:
         self._quote_url = self._cfg["real_base_url"]
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
+        self._store = store  # SupabaseSignalStore — 토큰 Supabase 캐싱용
 
         env = "모의투자" if self._is_mock else "실전투자"
         logger.info(f"KIS API 초기화 완료 [{env}] {self._base_url}")
 
     # ── 토큰 관리 ────────────────────────────────────────────────
     def _get_token(self) -> str:
+        # 1) in-memory 캐시 확인
         if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
             return self._access_token
 
+        # 2) Supabase 캐시 확인 (GitHub Actions 실행 간 재사용 — 1일 1회 발급 제한 회피)
+        if self._store:
+            cached_token, cached_expires = self._store.get_access_token()
+            if cached_token and cached_expires and datetime.now() < cached_expires:
+                logger.info("Supabase 캐시 토큰 재사용")
+                self._access_token = cached_token
+                self._token_expires_at = cached_expires
+                return self._access_token
+
+        # 3) 신규 발급
         logger.info("KIS 액세스 토큰 발급 중...")
         resp = requests.post(
             f"{self._base_url}/oauth2/tokenP",
@@ -50,6 +63,7 @@ class KISApi:
                 "appkey": self._app_key,
                 "appsecret": self._app_secret,
             },
+            timeout=15,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -57,6 +71,9 @@ class KISApi:
         self._token_expires_at = datetime.now() + timedelta(
             hours=self._cfg["token_expire_hours"] - 1
         )
+        # Supabase에 저장 (다음 실행에서 재사용)
+        if self._store:
+            self._store.save_access_token(self._access_token, self._token_expires_at)
         logger.info("토큰 발급 성공")
         return self._access_token
 
@@ -87,28 +104,41 @@ class KISApi:
 
     def _get(self, path: str, tr_id: str, params: dict, base: str = None) -> dict:
         url = (base or self._base_url) + path
-        resp = requests.get(
-            url,
-            headers=self._headers(tr_id),
-            params=params,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("rt_cd") != "0":
-            raise RuntimeError(f"KIS API 오류: {data.get('msg1')} (tr_id={tr_id})")
-        return data
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("rt_cd") != "0":
+                    raise RuntimeError(f"KIS API 오류: {data.get('msg1')} (tr_id={tr_id})")
+                return data
+            except (ReqConnError, ReqTimeout) as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(3 * (attempt + 1))
+        raise last_err
 
     def _post(self, path: str, tr_id: str, body: dict) -> dict:
-        resp = requests.post(
-            f"{self._base_url}{path}",
-            headers=self._headers(tr_id, hash_body=body),
-            json=body,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("rt_cd") != "0":
-            raise RuntimeError(f"KIS API 오류: {data.get('msg1')} (tr_id={tr_id})")
-        return data
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{self._base_url}{path}",
+                    headers=self._headers(tr_id, hash_body=body),
+                    json=body,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("rt_cd") != "0":
+                    raise RuntimeError(f"KIS API 오류: {data.get('msg1')} (tr_id={tr_id})")
+                return data
+            except (ReqConnError, ReqTimeout) as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(3 * (attempt + 1))
+        raise last_err
 
     # ── 주가 조회 ────────────────────────────────────────────────
     def get_current_price(self, ticker: str) -> dict:

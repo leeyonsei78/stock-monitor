@@ -54,10 +54,10 @@ class RealtimeMonitor:
         self._budget_per_stock = self._cfg["trading"].get("max_budget_per_stock", 1_000_000)
         self._watchlist       = monitor_cfg.get("watchlist", [])
 
-        self._api      = KISApi()
+        self._store    = store  # SupabaseSignalStore or None (in-memory fallback)
+        self._api      = KISApi(store=store)
         self._signal   = SignalGenerator()
         self._notifier = SlackNotifier()
-        self._store    = store  # SupabaseSignalStore or None (in-memory fallback)
 
         # in-memory 쿨다운 (Supabase 미사용 시)
         self._last_alert: dict[str, tuple[str, datetime]] = {}

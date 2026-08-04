@@ -76,15 +76,21 @@ class SupabaseSignalStore:
             logger.error(f"Supabase 가격 스냅샷 조회 실패 [{ticker}]: {e}")
             return None
 
-    # ── KIS 토큰 캐싱 (5분마다 재발급 방지) ───────────────────────
+    # ── KIS 토큰 캐싱 (30분마다 재발급 방지) ──────────────────────
     def save_access_token(self, token: str, expires_at: datetime):
         """KIS 액세스 토큰 Supabase에 저장 (실행 간 재사용)"""
         try:
-            self._client.table("stock_kis_token_cache").upsert({
+            logger.info("KIS 토큰 Supabase 저장 시도...")
+            self._client.table("stock_kis_token_cache").delete().neq("id", 0).execute()
+            result = self._client.table("stock_kis_token_cache").insert({
                 "id": 1,
                 "access_token": token,
                 "expires_at": expires_at.isoformat(),
             }).execute()
+            if result.data:
+                logger.info("KIS 토큰 Supabase 저장 성공")
+            else:
+                logger.error(f"KIS 토큰 저장 응답 없음: {result}")
         except Exception as e:
             logger.error(f"KIS 토큰 저장 실패: {e}")
 
@@ -94,15 +100,15 @@ class SupabaseSignalStore:
             result = (
                 self._client.table("stock_kis_token_cache")
                 .select("access_token, expires_at")
-                .eq("id", 1)
                 .execute()
             )
             if result.data:
                 token = result.data[0]["access_token"]
-                # 타임존 정보 제거 후 naive datetime으로 변환
                 expires_str = result.data[0]["expires_at"][:19]
                 expires_at = datetime.fromisoformat(expires_str)
+                logger.info(f"KIS 토큰 Supabase 조회 성공 (만료: {expires_str})")
                 return token, expires_at
+            logger.info("KIS 토큰 Supabase 캐시 없음 → 신규 발급")
         except Exception as e:
             logger.error(f"KIS 토큰 조회 실패: {e}")
         return None, None

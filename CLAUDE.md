@@ -2,7 +2,9 @@
 
 ## 프로젝트 개요
 KIS Open API 기반 실시간 주식 모니터링 + Slack 알림 시스템.
-GitHub Actions에서 30분마다 자동 실행, Supabase로 쿨다운 및 토큰 관리.
+현재: GitHub Actions 30분마다 자동 실행 (전환 중) → **목표: Oracle Cloud VM cron으로 이전**
+
+---
 
 ## 실행 방법
 
@@ -17,11 +19,13 @@ python run_monitor.py --interval 180     # 3분 간격
 python run_monitor.py --watch 005930     # 추가 감시 종목
 ```
 
-### GitHub Actions (자동, PC 불필요)
+### GitHub Actions (현재 운영 중 — VM 이전 전까지)
 - 평일 08:00~18:00 KST 30분마다 자동 실행 (장전·정규장·장후 시간외 포함)
 - `run_monitor_once.py` 한 번 실행 후 종료
 - Supabase `stock_signal_log` 테이블로 쿨다운 관리
 - Supabase `stock_kis_token_cache` 테이블로 KIS 토큰 캐싱 (1일 1회 발급 제한 대응)
+- **알려진 문제**: FinanceDataReader 종목당 16~17초 소요, UTC 23:00 트리거 누락 간헐적 발생
+  - timeout-minutes: 15, MAX_SCAN_SEC=720 으로 임시 대응 완료 (2026-08-05)
 
 #### GitHub Actions 크론 (UTC 기준)
 ```yaml
@@ -32,6 +36,81 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 #### venv 캐싱
 - `.venv` 전체를 `requirements.txt` 해시 기준으로 캐싱
 - `requirements.txt` 변경이 없으면 패키지 설치 단계 완전 스킵
+
+---
+
+## Oracle Cloud VM 이전 계획 (진행 중)
+
+### 왜 VM으로 이전하는가
+| 항목 | GitHub Actions | Oracle Cloud VM |
+|---|---|---|
+| 08:00 신뢰성 | ❌ UTC 23:00 부하로 누락 발생 | ✅ 로컬 cron, 1분 이내 오차 |
+| 타임아웃 | 15분 제한 | 제한 없음 |
+| Slack 명령어 매매 | ❌ 상시 실행 불가 | ✅ 데몬으로 운영 가능 |
+| 비용 | 무료 (월 2,000분 한도) | 무료 (24/7 상시) |
+
+### VM 전환 체크리스트
+- [ ] **1단계**: Oracle Cloud 계정 생성 + Free VM 프로비저닝
+  - Shape: `VM.Standard.A1.Flex` (ARM) 또는 `VM.Standard.E2.1.Micro` (AMD)
+  - OS: Ubuntu 22.04 LTS
+- [ ] **2단계**: VM 환경 구성
+  ```bash
+  sudo apt update && sudo apt upgrade -y
+  sudo apt install -y python3.12 python3.12-venv python3-pip git
+  sudo timedatectl set-timezone Asia/Seoul   # KST로 설정 (cron 기준 시간)
+  ```
+- [ ] **3단계**: 코드 배포
+  ```bash
+  cd ~
+  git clone https://github.com/leeyonsei78/stock-monitor.git
+  cd stock-monitor
+  python3.12 -m venv .venv
+  .venv/bin/pip install -r requirements.txt
+  ```
+- [ ] **4단계**: `.env` 파일 작성 (VM에 직접, GitHub Secrets 불필요)
+  ```bash
+  vi ~/stock-monitor/.env   # 환경변수 입력
+  chmod 600 ~/stock-monitor/.env
+  ```
+- [ ] **5단계**: 실행 래퍼 스크립트 작성
+  ```bash
+  cat > ~/run_stock_monitor.sh << 'EOF'
+  #!/bin/bash
+  cd /home/ubuntu/stock-monitor
+  /home/ubuntu/stock-monitor/.venv/bin/python run_monitor_once.py \
+    >> /home/ubuntu/stock-monitor/logs/monitor.log 2>&1
+  EOF
+  chmod +x ~/run_stock_monitor.sh
+  mkdir -p ~/stock-monitor/logs
+  ```
+- [ ] **6단계**: cron 등록 (`crontab -e`)
+  ```cron
+  # 평일 매 30분 실행 — Python 코드가 08:00~18:00 KST 외 자동 종료
+  */30 * * * 1-5 /home/ubuntu/run_stock_monitor.sh
+  # 매일 07:00 KST 자동 git pull (설정 변경 반영)
+  0 7 * * 1-5 cd /home/ubuntu/stock-monitor && git pull origin main >> /home/ubuntu/stock-monitor/logs/update.log 2>&1
+  ```
+- [ ] **7단계**: logrotate 설정
+  ```bash
+  sudo tee /etc/logrotate.d/stock-monitor << 'EOF'
+  /home/ubuntu/stock-monitor/logs/monitor.log {
+      daily
+      rotate 14
+      compress
+      missingok
+      notifempty
+  }
+  EOF
+  ```
+- [ ] **8단계**: 동작 확인
+  ```bash
+  ~/run_stock_monitor.sh
+  tail -f ~/stock-monitor/logs/monitor.log
+  ```
+- [ ] **9단계**: GitHub Actions schedule 비활성화 (workflow_dispatch는 유지)
+- [ ] **10단계**: Slack 명령어 매매 웹훅 서버 구축 (`src/trading/manual_trader.py`)
+
+---
 
 ## 핵심 설정 파일
 
@@ -77,6 +156,8 @@ git commit -m "알림 조건 조정"
 git push origin main
 ```
 
+---
+
 ## 신호 점수 체계
 - `-1.0 ~ +1.0` 범위
 - 기술적 지표 70% + 투자자 수급 30%
@@ -92,6 +173,8 @@ git push origin main
 | 기관 | 30% | |
 | 프로그램 | 20% | |
 | 개인 | 15% | 역방향 지표 |
+
+---
 
 ## Slack 알림 구성
 매수/매도 신호 발생 시 아래 항목을 포함한 메시지 전송:
@@ -114,6 +197,8 @@ git push origin main
 - Slack 메시지에 ⏰ 시간외 배지 표시, 분봉 추세 항목에 "시간외 — 데이터 미제공" 표시
 - 당일 등락률 / 5분 변화율 / 종합 의견은 정상 표시
 
+---
+
 ## KIS API 안정성
 - 액세스 토큰 Supabase 캐싱 (`stock_kis_token_cache`): 실행 간 재사용, 신규 발급 최소화
 - `ConnectionError` / `Timeout` 발생 시 3회 자동 재시도 (3초·6초 간격)
@@ -121,13 +206,16 @@ git push origin main
 
 ## OHLCV 데이터 주의사항
 - KIS 모의 API는 일봉 데이터(`inquire-daily-chartprice`) 미지원 → **FinanceDataReader**로 대체
+- FinanceDataReader 속도: GitHub Actions 환경에서 종목당 16~17초 (외부 네트워크 지연)
 - 신규 상장 종목 최소 30일 데이터 필요 (30일 미만 시 스킵, 오류 아님)
-- 스캔 완료 로그: `스킵 N개 | 오류 N개` 로 구분
+- 스캔 완료 로그: `스킵 N개 | 오류 N개 | 소요 N초` 로 구분
 
 ## Supabase 테이블
 - `stock_signal_log`: 알림 쿨다운 관리
 - `stock_price_snapshot`: 종목별 직전 가격 저장 (5분 변화율 계산용)
 - `stock_kis_token_cache`: KIS 액세스 토큰 캐싱 (id=1 단일 행, RLS 비활성화 필요)
+
+---
 
 ## 환경변수 (.env)
 ```
@@ -143,16 +231,18 @@ SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_KEY=sb_secret_...
 ```
 
-## GitHub Secrets (Actions용)
+## GitHub Secrets (Actions용 — VM 이전 후 불필요)
 `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_ACCOUNT_NO`,
 `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`,
 `SUPABASE_URL`, `SUPABASE_KEY`
+
+---
 
 ## 프로젝트 구조
 ```
 C:\test_stock_auto\
 ├── run_monitor.py          # 로컬 실행 (루프)
-├── run_monitor_once.py     # GitHub Actions 실행 (1회), 08:00~18:00 KST
+├── run_monitor_once.py     # 1회 실행 (GitHub Actions / VM cron 공용)
 ├── config/
 │   ├── config.yaml         # 운영 설정
 │   └── strategy.yaml       # 매매 신호 기준
@@ -168,11 +258,14 @@ C:\test_stock_auto\
     ├── notification/slack_bot.py     # Slack 알림
     └── trading/
         ├── order_manager.py          # 주문 실행
-        └── manual_trader.py          # Slack 명령어 매매
+        └── manual_trader.py          # Slack 명령어 매매 (VM 이전 후 활성화 예정)
 ```
 
+---
+
 ## 향후 계획
-- [ ] Oracle Cloud VM으로 Slack 명령어 매매 (/trade buy 종목 수량 가격)
+- [ ] **Oracle Cloud VM cron 이전** (진행 중 — 위 체크리스트 참고)
+- [ ] VM에서 Slack 명령어 매매 웹훅 서버 구축 (/trade buy 종목 수량 가격)
 - [ ] 분봉 기반 실시간 기술적 지표 추가 (일봉 → 하이브리드)
 - [ ] 실전 투자 전환 (KIS_IS_MOCK=false)
 - [ ] 모의투자 결과 기반 파라미터 최적화

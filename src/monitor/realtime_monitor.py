@@ -483,8 +483,11 @@ class RealtimeMonitor:
         return signal
 
     # ── 1회 스캔 ─────────────────────────────────────────────────
+    MAX_SCAN_SEC = 720  # 12분 예산 (timeout-minutes: 15 보다 3분 여유)
+
     def _scan_once(self):
         logger.info("=== 종목 스캔 시작 ===")
+        scan_start = time.time()
 
         # 감시 종목 = 사용자 정의 watchlist + 거래량 상위
         stocks: list[dict] = []
@@ -501,12 +504,21 @@ class RealtimeMonitor:
         except Exception as e:
             logger.error(f"거래량 상위 조회 실패: {e}")
 
+        total        = len(stocks)
         buy_signals  = []
         sell_signals = []
         skipped      = 0
         errors       = 0
 
-        for stock in stocks:
+        for i, stock in enumerate(stocks):
+            elapsed = time.time() - scan_start
+            if elapsed > self.MAX_SCAN_SEC:
+                logger.warning(
+                    f"스캔 시간 예산 초과 ({elapsed:.0f}초) — "
+                    f"{i}/{total}개 처리, {total - i}개 생략"
+                )
+                break
+
             try:
                 sig = self._analyze_stock(stock["ticker"], stock["name"])
                 if sig is None:
@@ -521,11 +533,13 @@ class RealtimeMonitor:
                 logger.error(f"[{stock['ticker']}] 분석 중 예외: {e}")
                 errors += 1
 
+        elapsed_total = time.time() - scan_start
         logger.info(
             f"=== 스캔 완료: 총 {len(stocks)}개 | "
             f"매수신호 {len(buy_signals)}개 | "
             f"매도신호 {len(sell_signals)}개 | "
-            f"스킵 {skipped}개 | 오류 {errors}개 ==="
+            f"스킵 {skipped}개 | 오류 {errors}개 | "
+            f"소요 {elapsed_total:.0f}초 ==="
         )
 
     # ── 메인 루프 ────────────────────────────────────────────────

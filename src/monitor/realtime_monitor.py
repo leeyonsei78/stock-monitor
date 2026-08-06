@@ -93,31 +93,9 @@ class RealtimeMonitor:
             return True
         return last_sig != signal_type.value
 
-    def _mark_alerted(self, ticker: str, signal_type: SignalType,
-                      score: float = 0, price: int = 0,
-                      signal: Optional[TradeSignal] = None,
-                      investor_current: Optional[dict] = None):
+    def _mark_alerted(self, ticker: str, signal_type: SignalType, score: float = 0, price: int = 0):
         if self._store:
-            extra: dict = {}
-            if signal:
-                ind = signal.indicators
-                extra = {
-                    "name": signal.name,
-                    "tech_score": signal.tech_score,
-                    "investor_score": signal.investor_score,
-                    "reason": signal.reason,
-                    "rsi": ind.get("rsi"),
-                    "macd_histogram": ind.get("macd_histogram"),
-                    "volume_ratio": ind.get("volume_ratio"),
-                    "bb_pct": ind.get("bb_pct"),
-                    "ma5": ind.get("ma5"),
-                    "ma20": ind.get("ma20"),
-                    "ma60": ind.get("ma60"),
-                }
-            if investor_current:
-                extra["foreign_net"] = investor_current.get("foreign")
-                extra["institution_net"] = investor_current.get("institution")
-            self._store.save_signal(ticker, signal_type.value, score, price, **extra)
+            self._store.save_signal(ticker, signal_type.value, score, price)
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
 
@@ -132,7 +110,6 @@ class RealtimeMonitor:
             if signal.signal_type == SignalType.STRONG_BUY:
                 budget = int(budget * 1.5)
             qty = max(1, int(budget / price))
-            # 지정가 매수: 현재가 (시장가와 동일 효과 기대)
             buy_price  = price
             target     = int(price * 1.05)   # +5% 목표가
             stop_loss  = int(price * 0.97)   # -3% 손절가
@@ -416,7 +393,6 @@ class RealtimeMonitor:
             logger.warning(f"[{ticker}] 데이터 조회 실패: {e}")
             return None
 
-        # 투자자 히스토리 실패 시 빈 리스트로 대체 (중립 점수 처리됨)
         investor_hist = []
         try:
             investor_hist = self._api.get_investor_trading_history(ticker, days=10)
@@ -426,13 +402,6 @@ class RealtimeMonitor:
         if len(ohlcv) < 30:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
             return None
-
-        # 일봉 캐시 저장 (웹 차트용 — 실패해도 계속)
-        if self._store:
-            try:
-                self._store.save_ohlcv_cache(ticker, ohlcv[-120:])
-            except Exception:
-                pass
 
         try:
             signal = self._signal.generate(
@@ -447,7 +416,6 @@ class RealtimeMonitor:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
             return None
 
-        # 액션 신호일 때만 Slack 발송
         if signal.signal_type == SignalType.HOLD:
             return signal
 
@@ -461,7 +429,6 @@ class RealtimeMonitor:
             if last_price and last_price > 0 and signal.current_price > 0:
                 five_min_change_pct = (signal.current_price - last_price) / last_price * 100
 
-        # 시간외에는 분봉 없음
         minute_candles: list = []
         if not after_hours:
             try:
@@ -473,7 +440,6 @@ class RealtimeMonitor:
             signal, intraday_change_pct, five_min_change_pct, minute_candles
         )
 
-        # 직전 가격 저장 (다음 실행 시 5분 변화율 계산용)
         if self._store:
             self._store.save_price_snapshot(ticker, signal.current_price)
 
@@ -500,13 +466,9 @@ class RealtimeMonitor:
         )
 
         self._notifier.send_sync(msg)
-        self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price,
-                           signal=signal, investor_current=investor_current)
+        self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price)
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
-            f"(점수 {signal.score:+.3f}) / 당일{intraday_change_pct:+.2f}% / "
-            f"5분{five_min_change_pct:+.2f}%" if five_min_change_pct is not None
-            else f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
             f"(점수 {signal.score:+.3f}) / 당일{intraday_change_pct:+.2f}%"
         )
         return signal
@@ -518,7 +480,6 @@ class RealtimeMonitor:
         logger.info("=== 종목 스캔 시작 ===")
         scan_start = time.time()
 
-        # 감시 종목 = 사용자 정의 watchlist + 거래량 상위
         stocks: list[dict] = []
 
         for ticker in self._watchlist:
@@ -604,7 +565,6 @@ class RealtimeMonitor:
                 now = datetime.now()
                 logger.info(f"장 외 시간 ({now.strftime('%H:%M')}) - 대기 중...")
 
-            # 다음 스캔까지 대기
             next_scan = datetime.now() + timedelta(seconds=self._scan_interval)
             logger.info(f"다음 스캔: {next_scan.strftime('%H:%M:%S')}")
 

@@ -93,9 +93,31 @@ class RealtimeMonitor:
             return True
         return last_sig != signal_type.value
 
-    def _mark_alerted(self, ticker: str, signal_type: SignalType, score: float = 0, price: int = 0):
+    def _mark_alerted(self, ticker: str, signal_type: SignalType,
+                      score: float = 0, price: int = 0,
+                      signal: Optional[TradeSignal] = None,
+                      investor_current: Optional[dict] = None):
         if self._store:
-            self._store.save_signal(ticker, signal_type.value, score, price)
+            extra: dict = {}
+            if signal:
+                ind = signal.indicators
+                extra = {
+                    "name": signal.name,
+                    "tech_score": signal.tech_score,
+                    "investor_score": signal.investor_score,
+                    "reason": signal.reason,
+                    "rsi": ind.get("rsi"),
+                    "macd_histogram": ind.get("macd_histogram"),
+                    "volume_ratio": ind.get("volume_ratio"),
+                    "bb_pct": ind.get("bb_pct"),
+                    "ma5": ind.get("ma5"),
+                    "ma20": ind.get("ma20"),
+                    "ma60": ind.get("ma60"),
+                }
+            if investor_current:
+                extra["foreign_net"] = investor_current.get("foreign")
+                extra["institution_net"] = investor_current.get("institution")
+            self._store.save_signal(ticker, signal_type.value, score, price, **extra)
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
 
@@ -405,6 +427,13 @@ class RealtimeMonitor:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
             return None
 
+        # 일봉 캐시 저장 (웹 차트용 — 실패해도 계속)
+        if self._store:
+            try:
+                self._store.save_ohlcv_cache(ticker, ohlcv[-120:])
+            except Exception:
+                pass
+
         try:
             signal = self._signal.generate(
                 ticker=ticker,
@@ -471,7 +500,8 @@ class RealtimeMonitor:
         )
 
         self._notifier.send_sync(msg)
-        self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price)
+        self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price,
+                           signal=signal, investor_current=investor_current)
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
             f"(점수 {signal.score:+.3f}) / 당일{intraday_change_pct:+.2f}% / "

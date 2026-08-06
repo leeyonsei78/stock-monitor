@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-dotenv>=1.0.0
+supabase>=2.0.0
+requests>=2.31.0
+PyYAML>=6.0.2
+finance-datareader>=0.9.50
+pandas>=2.3.2
+numpy>=2.2.6

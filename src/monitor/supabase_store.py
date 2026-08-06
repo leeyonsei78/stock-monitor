@@ -37,14 +37,12 @@ class SupabaseSignalStore:
             logger.error(f"Supabase 쿨다운 조회 실패 [{ticker}]: {e}")
             return True  # 오류 시 알림 허용
 
-    def save_signal(self, ticker: str, signal_type: str, score: float, price: int):
+    def save_signal(self, ticker: str, signal_type: str, score: float, price: int, **extra):
         try:
-            self._client.table("stock_signal_log").insert({
-                "ticker": ticker,
-                "signal_type": signal_type,
-                "score": score,
-                "current_price": price,
-            }).execute()
+            row = {"ticker": ticker, "signal_type": signal_type,
+                   "score": score, "current_price": price}
+            row.update({k: v for k, v in extra.items() if v is not None})
+            self._client.table("stock_signal_log").insert(row).execute()
         except Exception as e:
             logger.error(f"Supabase 신호 저장 실패 [{ticker}]: {e}")
 
@@ -75,6 +73,38 @@ class SupabaseSignalStore:
         except Exception as e:
             logger.error(f"Supabase 가격 스냅샷 조회 실패 [{ticker}]: {e}")
             return None
+
+    # ── OHLCV 일봉 캐시 (웹 차트용) ────────────────────────────────
+    def save_ohlcv_cache(self, ticker: str, ohlcv: list[dict]):
+        """일봉 데이터 Supabase에 upsert (차트 API용)"""
+        if not ohlcv:
+            return
+        try:
+            rows = [
+                {"ticker": ticker, "date": bar["date"], "open": bar["open"],
+                 "high": bar["high"], "low": bar["low"], "close": bar["close"],
+                 "volume": bar["volume"]}
+                for bar in ohlcv
+            ]
+            self._client.table("stock_ohlcv_cache").upsert(rows).execute()
+        except Exception as e:
+            logger.error(f"OHLCV 캐시 저장 실패 [{ticker}]: {e}")
+
+    def get_ohlcv_cache(self, ticker: str, days: int = 60) -> list[dict]:
+        """일봉 캐시 조회"""
+        try:
+            result = (
+                self._client.table("stock_ohlcv_cache")
+                .select("date,open,high,low,close,volume")
+                .eq("ticker", ticker)
+                .order("date", desc=False)
+                .limit(days)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"OHLCV 캐시 조회 실패 [{ticker}]: {e}")
+            return []
 
     # ── KIS 토큰 캐싱 (30분마다 재발급 방지) ──────────────────────
     def save_access_token(self, token: str, expires_at: datetime):

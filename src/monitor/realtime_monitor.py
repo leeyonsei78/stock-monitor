@@ -123,13 +123,11 @@ class RealtimeMonitor:
                 "stop_loss":  stop_loss,
             }
         else:
-            qty = signal.recommended_qty if signal.recommended_qty > 0 else 1
-            sell_price = price
             return {
                 "action":     "매도",
                 "buy_price":  None,
-                "sell_price": sell_price,
-                "qty":        qty,
+                "sell_price": price,
+                "qty":        None,
                 "target":     None,
                 "stop_loss":  None,
             }
@@ -374,7 +372,8 @@ class RealtimeMonitor:
             rec_lines.append(f"• 매수가: *{rec['buy_price']:,}원* (지정가)  |  수량: *{rec['qty']:,}주*")
             rec_lines.append(f"• 목표가: *{rec['target']:,}원* (+5%)  |  손절가: *{rec['stop_loss']:,}원* (-3%)")
         else:
-            rec_lines.append(f"• 매도가: *{rec['sell_price']:,}원*  |  수량: *{rec['qty']:,}주*")
+            rec_lines.append(f"• 기준가: *{rec['sell_price']:,}원*")
+            rec_lines.append(f"• 보유 중이면 매도 고려  |  미보유 시 신규 매수 금지")
         rec_block = "\n".join(rec_lines)
 
         # ── 조합 ──

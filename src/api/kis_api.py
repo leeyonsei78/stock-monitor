@@ -216,6 +216,7 @@ class KISApi:
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
             "FHKST01010900",
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+            base=self._quote_url,
         )
         out = data.get("output", [])
         result = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
@@ -249,6 +250,7 @@ class KISApi:
                 "FID_INPUT_DATE_1": start_date,
                 "FID_INPUT_DATE_2": end_date,
             },
+            base=self._quote_url,
         )
         result = []
         for row in data.get("output", []):

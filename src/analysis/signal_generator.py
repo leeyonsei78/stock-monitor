@@ -172,7 +172,7 @@ class SignalGenerator:
         if inv_hist.get("foreign_streak", 0) <= -3:
             reasons.append(f"외국인 {abs(inv_hist['foreign_streak'])}일 연속 매도")
 
-        if reasons and holding_qty > 0:
+        if reasons:
             if score < -0.7:
                 return SignalType.STRONG_SELL, " / ".join(reasons)
             return SignalType.SELL, " / ".join(reasons)

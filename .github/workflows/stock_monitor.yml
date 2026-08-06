@@ -8,10 +8,6 @@ on:
     - cron: '0,30 0-8 * * 1-5'
   workflow_dispatch:  # 수동 실행 버튼
 
-concurrency:
-  group: stock-monitor
-  cancel-in-progress: false  # 현재 실행 중인 스캔 보호; pending은 마지막 1개만 유지
-
 jobs:
   monitor:
     runs-on: ubuntu-latest

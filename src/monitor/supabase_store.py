@@ -104,9 +104,11 @@ class SupabaseSignalStore:
             )
             if result.data:
                 token = result.data[0]["access_token"]
-                expires_str = result.data[0]["expires_at"][:19]
-                expires_at = datetime.fromisoformat(expires_str)
-                logger.info(f"KIS 토큰 Supabase 조회 성공 (만료: {expires_str})")
+                expires_raw = result.data[0]["expires_at"]
+                expires_at = datetime.fromisoformat(expires_raw)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                logger.info(f"KIS 토큰 Supabase 조회 성공 (만료: {expires_at.isoformat()})")
                 return token, expires_at
             logger.info("KIS 토큰 Supabase 캐시 없음 → 신규 발급")
         except Exception as e:

@@ -8,7 +8,7 @@ import time
 import hashlib
 import requests
 from requests.exceptions import ConnectionError as ReqConnError, Timeout as ReqTimeout
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import yaml
 from dotenv import load_dotenv
@@ -42,13 +42,13 @@ class KISApi:
     # ── 토큰 관리 ────────────────────────────────────────────────
     def _get_token(self) -> str:
         # 1) in-memory 캐시 확인
-        if self._access_token and self._token_expires_at and datetime.now() < self._token_expires_at:
+        if self._access_token and self._token_expires_at and datetime.now(timezone.utc) < self._token_expires_at:
             return self._access_token
 
         # 2) Supabase 캐시 확인 (GitHub Actions 실행 간 재사용 — 1일 1회 발급 제한 회피)
         if self._store:
             cached_token, cached_expires = self._store.get_access_token()
-            if cached_token and cached_expires and datetime.now() < cached_expires:
+            if cached_token and cached_expires and datetime.now(timezone.utc) < cached_expires:
                 logger.info("Supabase 캐시 토큰 재사용")
                 self._access_token = cached_token
                 self._token_expires_at = cached_expires
@@ -68,7 +68,7 @@ class KISApi:
         resp.raise_for_status()
         data = resp.json()
         self._access_token = data["access_token"]
-        self._token_expires_at = datetime.now() + timedelta(
+        self._token_expires_at = datetime.now(timezone.utc) + timedelta(
             hours=self._cfg["token_expire_hours"] - 1
         )
         # Supabase에 저장 (다음 실행에서 재사용)

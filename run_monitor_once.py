@@ -44,7 +44,7 @@ def main():
         logger.warning("SUPABASE 환경변수 없음 - 쿨다운 in-memory 사용")
 
     monitor = RealtimeMonitor(store=store)
-    monitor._scan_once()
+    monitor.run_once()
     logger.info("스캔 완료")
 
 

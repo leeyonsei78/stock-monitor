@@ -504,11 +504,12 @@ class RealtimeMonitor:
         except Exception as e:
             logger.error(f"거래량 상위 조회 실패: {e}")
 
-        total        = len(stocks)
-        buy_signals  = []
-        sell_signals = []
-        skipped      = 0
-        errors       = 0
+        total      = len(stocks)
+        buy_count  = 0
+        sell_count = 0
+        skipped    = 0
+        errors     = 0
+        processed  = 0
 
         for i, stock in enumerate(stocks):
             elapsed = time.time() - scan_start
@@ -523,24 +524,29 @@ class RealtimeMonitor:
                 sig = self._analyze_stock(stock["ticker"], stock["name"])
                 if sig is None:
                     skipped += 1
-                    continue
-                if sig.signal_type in (SignalType.BUY, SignalType.STRONG_BUY):
-                    buy_signals.append(sig)
-                elif sig.signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
-                    sell_signals.append(sig)
-                time.sleep(0.3)
+                else:
+                    if sig.signal_type in (SignalType.BUY, SignalType.STRONG_BUY):
+                        buy_count += 1
+                    elif sig.signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
+                        sell_count += 1
+                    time.sleep(0.3)
             except Exception as e:
                 logger.error(f"[{stock['ticker']}] 분석 중 예외: {e}")
                 errors += 1
+            processed = i + 1
 
         elapsed_total = time.time() - scan_start
         logger.info(
-            f"=== 스캔 완료: 총 {len(stocks)}개 | "
-            f"매수신호 {len(buy_signals)}개 | "
-            f"매도신호 {len(sell_signals)}개 | "
+            f"=== 스캔 완료: {processed}/{total}개 처리 | "
+            f"매수신호 {buy_count}개 | "
+            f"매도신호 {sell_count}개 | "
             f"스킵 {skipped}개 | 오류 {errors}개 | "
             f"소요 {elapsed_total:.0f}초 ==="
         )
+
+    def run_once(self):
+        """단일 스캔 실행 (GitHub Actions / VM cron 공용)"""
+        self._scan_once()
 
     # ── 메인 루프 ────────────────────────────────────────────────
     def run(self):

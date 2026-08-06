@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: stock-monitor
-  cancel-in-progress: false  # 실행 중인 스캔 중단 방지; 새 트리거는 완료 후 실행
+  cancel-in-progress: false  # 현재 실행 중인 스캔 보호; pending은 마지막 1개만 유지
 
 jobs:
   monitor:

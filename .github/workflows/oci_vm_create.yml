@@ -103,7 +103,7 @@ jobs:
                           source_details=oci.core.models.InstanceSourceViaImageDetails(
                               source_type="image",
                               image_id=image_id,
-                              boot_volume_size_in_gbs=47,
+                              boot_volume_size_in_gbs=50,
                           ),
                           create_vnic_details=oci.core.models.CreateVnicDetails(
                               subnet_id=subnet_id,

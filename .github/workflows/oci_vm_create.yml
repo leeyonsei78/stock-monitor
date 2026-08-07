@@ -39,7 +39,7 @@ jobs:
           ssh_pub_key    = os.environ["OCI_SSH_PUBLIC_KEY"]
 
           try:
-              compute  = oci.compute.ComputeClient(config)
+              compute  = oci.core.ComputeClient(config)
               network  = oci.core.VirtualNetworkClient(config)
               identity = oci.identity.IdentityClient(config)
           except Exception as e:

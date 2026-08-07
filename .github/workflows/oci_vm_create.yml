@@ -1,0 +1,145 @@
+name: Oracle Cloud VM 자동 생성
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # 15분마다 시도 (용량 생기는 즉시 생성)
+  workflow_dispatch:          # 수동 실행 버튼
+
+jobs:
+  create-vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: OCI SDK 설치
+        run: pip install oci requests
+
+      - name: VM 생성 시도
+        env:
+          OCI_USER_OCID:      ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT:    ${{ secrets.OCI_FINGERPRINT }}
+          OCI_TENANCY_OCID:   ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_REGION:         ${{ secrets.OCI_REGION }}
+          OCI_PRIVATE_KEY:    ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          SLACK_BOT_TOKEN:    ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID:   ${{ secrets.SLACK_CHANNEL_ID }}
+        run: |
+          python3 << 'PYEOF'
+          import oci, os, sys, requests
+
+          config = {
+              "user":        os.environ["OCI_USER_OCID"],
+              "fingerprint": os.environ["OCI_FINGERPRINT"],
+              "tenancy":     os.environ["OCI_TENANCY_OCID"],
+              "region":      os.environ["OCI_REGION"],
+              "key_content": os.environ["OCI_PRIVATE_KEY"],
+          }
+          compartment_id = config["tenancy"]   # 루트 compartment = tenancy OCID 동일
+          ssh_pub_key    = os.environ["OCI_SSH_PUBLIC_KEY"]
+
+          try:
+              compute  = oci.compute.ComputeClient(config)
+              network  = oci.core.VirtualNetworkClient(config)
+              identity = oci.identity.IdentityClient(config)
+          except Exception as e:
+              print(f"OCI 클라이언트 초기화 실패: {e}")
+              sys.exit(0)
+
+          # 가용 도메인 조회
+          try:
+              ads = identity.list_availability_domains(compartment_id=compartment_id).data
+              print(f"가용 도메인 {len(ads)}개: {[a.name for a in ads]}")
+          except Exception as e:
+              print(f"가용 도메인 조회 실패: {e}")
+              sys.exit(0)
+
+          # Ubuntu 22.04 ARM 이미지 자동 조회
+          try:
+              images = compute.list_images(
+                  compartment_id=compartment_id,
+                  operating_system="Canonical Ubuntu",
+                  operating_system_version="22.04",
+                  shape="VM.Standard.A1.Flex",
+                  sort_by="TIMECREATED",
+                  sort_order="DESC",
+                  limit=1,
+              ).data
+              if not images:
+                  print("Ubuntu 22.04 ARM 이미지 없음")
+                  sys.exit(0)
+              image_id = images[0].id
+              print(f"이미지: {image_id}")
+          except Exception as e:
+              print(f"이미지 조회 실패: {e}")
+              sys.exit(0)
+
+          # 서브넷 자동 조회
+          try:
+              subnets = network.list_subnets(compartment_id=compartment_id).data
+              if not subnets:
+                  print("서브넷 없음")
+                  sys.exit(0)
+              subnet_id = subnets[0].id
+              print(f"서브넷: {subnet_id}")
+          except Exception as e:
+              print(f"서브넷 조회 실패: {e}")
+              sys.exit(0)
+
+          # 각 가용 도메인에서 순서대로 VM 생성 시도
+          for ad in ads:
+              print(f"\n시도 중: {ad.name}")
+              try:
+                  instance = compute.launch_instance(
+                      oci.core.models.LaunchInstanceDetails(
+                          compartment_id=compartment_id,
+                          availability_domain=ad.name,
+                          display_name="stock-monitor",
+                          shape="VM.Standard.A1.Flex",
+                          shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
+                              ocpus=1,
+                              memory_in_gbs=6,
+                          ),
+                          source_details=oci.core.models.InstanceSourceViaImageDetails(
+                              source_type="image",
+                              image_id=image_id,
+                              boot_volume_size_in_gbs=47,
+                          ),
+                          create_vnic_details=oci.core.models.CreateVnicDetails(
+                              subnet_id=subnet_id,
+                              assign_public_ip=True,
+                          ),
+                          metadata={"ssh_authorized_keys": ssh_pub_key},
+                      )
+                  ).data
+
+                  print(f"VM 생성 성공! ID: {instance.id}")
+
+                  # Slack 알림
+                  slack_token   = os.environ.get("SLACK_BOT_TOKEN", "")
+                  slack_channel = os.environ.get("SLACK_CHANNEL_ID", "")
+                  if slack_token and slack_channel:
+                      requests.post(
+                          "https://slack.com/api/chat.postMessage",
+                          headers={"Authorization": f"Bearer {slack_token}"},
+                          json={
+                              "channel": slack_channel,
+                              "text": (
+                                  f"✅ *Oracle Cloud VM 생성 완료!*\n"
+                                  f"VM ID: `{instance.id}`\n"
+                                  f"OCI 콘솔 → Compute → Instances 에서 공인 IP 확인 후 SSH 접속\n"
+                                  f"`ssh -i ~/.ssh/oracle_vm.key ubuntu@[공인IP]`"
+                              ),
+                          },
+                      )
+                  sys.exit(0)
+
+              except oci.exceptions.ServiceError as e:
+                  msg = str(e.message).lower() if e.message else ""
+                  if e.status in (500, 429) or "capacity" in msg or "host" in msg:
+                      print(f"  {ad.name}: 용량 부족 → 다음 AD 시도")
+                  else:
+                      print(f"  오류 {e.status}: {e.message}")
+
+          print("\n모든 가용 도메인 용량 부족 — 15분 후 재시도")
+          PYEOF

@@ -50,10 +50,22 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 | Slack 명령어 매매 | ❌ 상시 실행 불가 | ✅ 데몬으로 운영 가능 |
 | 비용 | 무료 (월 2,000분 한도) | 무료 (24/7 상시) |
 
+### OCI 자동 VM 생성 스크립트 (운영 중)
+- **파일**: `.github/workflows/oci_vm_create.yml`
+- **동작**: 15분마다 A1.Flex VM 생성 시도 → 용량 부족이면 조용히 종료, 성공하면 Slack 알림
+- **현재 상태**: 스크립트 정상 동작 확인 (2026-08-07), 도쿄 AD-1 용량 부족으로 대기 중
+- **OCI SDK 주의사항**:
+  - 올바른 import: `oci.core.ComputeClient` (`oci.compute` 아님)
+  - 부팅 볼륨 최소 크기: **50GB** (47GB 시 400 오류 발생)
+  - 투자자 API 순매수 필드: `ntby_qty` (`sll_ntby_qty` 아님)
+- **VM 생성 성공 시**: Slack에 "✅ Oracle Cloud VM 생성 완료!" + VM ID + SSH 접속 안내 전송
+- **GitHub Secrets**: `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_TENANCY_OCID`, `OCI_REGION`, `OCI_PRIVATE_KEY`, `OCI_SSH_PUBLIC_KEY`
+
 ### VM 전환 체크리스트
-- [ ] **1단계**: Oracle Cloud 계정 생성 + Free VM 프로비저닝
-  - Shape: `VM.Standard.A1.Flex` (ARM) 또는 `VM.Standard.E2.1.Micro` (AMD)
+- [x] **1단계**: Oracle Cloud 계정 생성 완료 (도쿄 리전, leeyonsei78@gmail.com)
+  - Shape: `VM.Standard.A1.Flex` (ARM, 1 OCPU / 6GB — 무료 최고 사양)
   - OS: Ubuntu 22.04 LTS
+  - **→ GitHub Actions 자동 생성 스크립트로 용량 생기면 자동 생성 대기 중**
 - [ ] **2단계**: VM 환경 구성
   ```bash
   sudo apt update && sudo apt upgrade -y

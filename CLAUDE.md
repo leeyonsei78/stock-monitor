@@ -2,7 +2,7 @@
 
 ## 프로젝트 개요
 KIS Open API 기반 실시간 주식 모니터링 + Slack 알림 시스템.
-현재: GitHub Actions 30분마다 자동 실행 (전환 중) → **목표: Oracle Cloud VM cron으로 이전**
+현재: GitHub Actions **10분마다** 자동 실행 (전환 중) → **목표: Oracle Cloud VM cron으로 이전**
 
 ---
 
@@ -20,17 +20,18 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 ```
 
 ### GitHub Actions (현재 운영 중 — VM 이전 전까지)
-- 평일 08:00~18:00 KST 30분마다 자동 실행 (장전·정규장·장후 시간외 포함)
+- 평일 08:00~18:00 KST **10분마다** 자동 실행 (장전·정규장·장후 시간외 포함)
 - `run_monitor_once.py` 한 번 실행 후 종료
 - Supabase `stock_signal_log` 테이블로 쿨다운 관리
 - Supabase `stock_kis_token_cache` 테이블로 KIS 토큰 캐싱 (1일 1회 발급 제한 대응)
-- **알려진 문제**: FinanceDataReader 종목당 16~17초 소요, UTC 23:00 트리거 누락 간헐적 발생
-  - timeout-minutes: 15, MAX_SCAN_SEC=720 으로 임시 대응 완료 (2026-08-05)
+- **트리거 신뢰성**: GitHub Actions 스케줄 누락률 60~70% 실측 (2026-08-07 기준 18개 중 6개만 실행)
+  - 30분 간격 시 최대 2시간 17분 공백 발생 → **10분 간격으로 변경**으로 30분 내 최소 1회 보장
+  - timeout-minutes: 15, MAX_SCAN_SEC=720 유지
 
 #### GitHub Actions 크론 (UTC 기준)
 ```yaml
-- cron: '0,30 23 * * 0-4'   # 장전: KST 08:00, 08:30 (일~목 UTC) — 08:00은 버퍼
-- cron: '0,30 0-8 * * 1-5'  # 정규장+장후: KST 09:00~17:30 (월~금 UTC)
+- cron: '*/10 23 * * 0-4'   # 장전: KST 08:00~09:00 (일~목 UTC), 10분 간격
+- cron: '*/10 0-8 * * 1-5'  # 정규장+장후: KST 09:00~18:00 (월~금 UTC), 10분 간격
 ```
 
 #### venv 캐싱
@@ -134,7 +135,7 @@ trading:
 ```yaml
 buy_conditions:
   min_signal_score: 0.60     # 매수 최소 점수 (높일수록 알림 감소)
-  rsi_max: 55                # RSI 상한
+  rsi_max: 60                # RSI 상한 (2026-08-06 55→60으로 완화)
   volume_min_ratio: 1.3      # 거래량 배율 조건
   foreign_net_buy: true      # 외국인 순매수 필수
 
@@ -204,9 +205,16 @@ git push origin main
 - `ConnectionError` / `Timeout` 발생 시 3회 자동 재시도 (3초·6초 간격)
 - 모든 API 요청 timeout 10초
 
+## KIS API 투자자 데이터 주의사항
+- `get_investor_trading` (FHKST01010900): 응답 순매수수량 필드는 **`ntby_qty`** (2026-08-07 수정)
+  - 이전 코드 `sll_ntby_qty` 는 존재하지 않는 필드 → 전 종목 수급 점수가 -0.105로 고정되는 버그
+  - 파싱 후 전부 0이면 WARNING 로그에 raw 응답 샘플 출력 (필드명 변경 감지용)
+- `get_investor_trading` 와 `get_investor_trading_history` 모두 `base=self._quote_url` (실서버) 사용
+  - 모의서버는 투자자 API 데이터 미제공
+
 ## OHLCV 데이터 주의사항
 - KIS 모의 API는 일봉 데이터(`inquire-daily-chartprice`) 미지원 → **FinanceDataReader**로 대체
-- FinanceDataReader 속도: GitHub Actions 환경에서 종목당 16~17초 (외부 네트워크 지연)
+- FinanceDataReader 속도: 초기 16~17초/종목 → 캐싱 안정화 후 약 3~4초/종목으로 개선됨
 - 신규 상장 종목 최소 30일 데이터 필요 (30일 미만 시 스킵, 오류 아님)
 - 스캔 완료 로그: `스킵 N개 | 오류 N개 | 소요 N초` 로 구분
 

@@ -211,7 +211,11 @@ class KISApi:
 
     # ── 투자자 동향 ──────────────────────────────────────────────
     def get_investor_trading(self, ticker: str) -> dict:
-        """투자자별 매매 동향 (외국인/기관/개인/프로그램)"""
+        """투자자별 매매 동향 (외국인/기관/개인/프로그램)
+        FHKST01010900: output 각 row = 투자자 유형 1개
+          invst_nm: 투자자명 ("외국인", "기관합계", "개인", "프로그램매매" 등)
+          ntby_qty: 순매수수량 (양수=순매수, 음수=순매도)
+        """
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
             "FHKST01010900",
@@ -221,9 +225,8 @@ class KISApi:
         out = data.get("output", [])
         result = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
         for row in out:
-            sll_type = row.get("sll_ntby_qty", "0")
             try:
-                qty = int(sll_type)
+                qty = int(row.get("ntby_qty", "0") or "0")
             except ValueError:
                 qty = 0
             investor = row.get("invst_nm", "")
@@ -235,6 +238,8 @@ class KISApi:
                 result["individual"] = qty
             elif "프로그램" in investor:
                 result["program"] = qty
+        if not any(result.values()):
+            logger.warning(f"[{ticker}] 투자자 데이터 전부 0 — 필드 확인 필요. raw sample: {out[:2] if out else '[]'}")
         return result
 
     def get_investor_trading_history(self, ticker: str, days: int = 10) -> list[dict]:

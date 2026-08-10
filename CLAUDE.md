@@ -52,13 +52,15 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 
 ### OCI 자동 VM 생성 스크립트 (운영 중)
 - **파일**: `.github/workflows/oci_vm_create.yml`
-- **동작**: 15분마다 A1.Flex VM 생성 시도 → 용량 부족이면 조용히 종료, 성공하면 Slack 알림
-- **현재 상태**: 스크립트 정상 동작 확인 (2026-08-07), 도쿄 AD-1 용량 부족으로 대기 중
+- **동작**: 15분마다 A1.Flex VM 생성 시도 → 도쿄 실패 시 오사카 자동 fallback → 성공하면 Slack 알림
+- **현재 상태**: 도쿄(AD-1) 용량 부족 지속 → 오사카(ap-osaka-1, AD 3개) fallback 추가 (2026-08-10)
+- **리전 시도 순서**: `ap-tokyo-1` (AD 1개) → `ap-osaka-1` (AD 3개, 자동 fallback)
+  - 오사카에 서브넷 없으면 VCN + IGW + 서브넷 + SSH 보안 규칙 자동 생성
 - **OCI SDK 주의사항**:
   - 올바른 import: `oci.core.ComputeClient` (`oci.compute` 아님)
   - 부팅 볼륨 최소 크기: **50GB** (47GB 시 400 오류 발생)
-  - 투자자 API 순매수 필드: `ntby_qty` (`sll_ntby_qty` 아님)
-- **VM 생성 성공 시**: Slack에 "✅ Oracle Cloud VM 생성 완료!" + VM ID + SSH 접속 안내 전송
+  - `get_investor_trading` (FHKST01010900) 응답 형식: 날짜별 row, 필드명 `frgn_ntby_qty` / `orgn_ntby_qty` / `prsn_ntby_qty` / `pgtr_ntby_qty` (2026-08-10 수정)
+- **VM 생성 성공 시**: Slack에 "✅ Oracle Cloud VM 생성 완료!" + 리전 + VM ID + SSH 접속 안내 전송
 - **GitHub Secrets**: `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_TENANCY_OCID`, `OCI_REGION`, `OCI_PRIVATE_KEY`, `OCI_SSH_PUBLIC_KEY`
 
 ### VM 전환 체크리스트

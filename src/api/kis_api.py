@@ -212,9 +212,11 @@ class KISApi:
     # ── 투자자 동향 ──────────────────────────────────────────────
     def get_investor_trading(self, ticker: str) -> dict:
         """투자자별 매매 동향 (외국인/기관/개인/프로그램)
-        FHKST01010900: output 각 row = 투자자 유형 1개
-          invst_nm: 투자자명 ("외국인", "기관합계", "개인", "프로그램매매" 등)
-          ntby_qty: 순매수수량 (양수=순매수, 음수=순매도)
+        FHKST01010900: output 각 row = 날짜별 데이터 (첫 번째 row = 당일)
+          frgn_ntby_qty: 외국인 순매수수량
+          orgn_ntby_qty: 기관 순매수수량
+          prsn_ntby_qty: 개인 순매수수량
+          pgtr_ntby_qty: 프로그램 순매수수량
         """
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
@@ -224,20 +226,18 @@ class KISApi:
         )
         out = data.get("output", [])
         result = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
-        for row in out:
-            try:
-                qty = int(row.get("ntby_qty", "0") or "0")
-            except ValueError:
-                qty = 0
-            investor = row.get("invst_nm", "")
-            if "외국인" in investor:
-                result["foreign"] = qty
-            elif "기관" in investor:
-                result["institution"] = qty
-            elif "개인" in investor:
-                result["individual"] = qty
-            elif "프로그램" in investor:
-                result["program"] = qty
+        if out:
+            row = out[0]  # 첫 번째 row = 당일 데이터
+            for key, field in (
+                ("foreign",     "frgn_ntby_qty"),
+                ("institution", "orgn_ntby_qty"),
+                ("individual",  "prsn_ntby_qty"),
+                ("program",     "pgtr_ntby_qty"),
+            ):
+                try:
+                    result[key] = int(row.get(field, "0") or "0")
+                except ValueError:
+                    pass
         if not any(result.values()):
             logger.warning(f"[{ticker}] 투자자 데이터 전부 0 — 필드 확인 필요. raw sample: {out[:2] if out else '[]'}")
         return result

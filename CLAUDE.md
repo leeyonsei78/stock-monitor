@@ -64,7 +64,7 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 - **GitHub Secrets**: `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_TENANCY_OCID`, `OCI_REGION`, `OCI_PRIVATE_KEY`, `OCI_SSH_PUBLIC_KEY`
 
 ### VM 전환 체크리스트
-- [x] **1단계**: Oracle Cloud 계정 생성 완료 (도쿄 리전, leeyonsei78@gmail.com)
+- [x] **1단계**: Oracle Cloud 계정 생성 완료 (도쿄 리전, privat@naver.com)
   - Shape: `VM.Standard.A1.Flex` (ARM, 1 OCPU / 6GB — 무료 최고 사양)
   - OS: Ubuntu 22.04 LTS
   - **→ GitHub Actions 자동 생성 스크립트로 용량 생기면 자동 생성 대기 중**

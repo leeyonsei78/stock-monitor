@@ -261,13 +261,22 @@ class KISApi:
         for row in data.get("output", []):
             if not row.get("stck_bsop_date"):
                 continue
-            result.append({
-                "date": row["stck_bsop_date"],
-                "foreign": int(row.get("frgn_ntby_qty", 0)),
-                "institution": int(row.get("orgn_ntby_qty", 0)),
-                "individual": int(row.get("indv_ntby_qty", 0)),
-                "program": int(row.get("pgtr_ntby_qty", 0)),
-            })
+            try:
+                result.append({
+                    "date": row["stck_bsop_date"],
+                    "foreign": int(row.get("frgn_ntby_qty", "0") or "0"),
+                    "institution": int(row.get("orgn_ntby_qty", "0") or "0"),
+                    "individual": int(row.get("indv_ntby_qty", "0") or "0"),
+                    "program": int(row.get("pgtr_ntby_qty", "0") or "0"),
+                })
+            except (ValueError, TypeError) as e:
+                logger.warning(f"[{ticker}] 히스토리 행 파싱 실패: {e} — row={row}")
+        if not result:
+            logger.warning(
+                f"[{ticker}] 투자자 히스토리 빈 결과 — "
+                f"rt_cd={data.get('rt_cd')}, msg={data.get('msg1')}, "
+                f"output_sample={data.get('output', [])[:1]}"
+            )
         return sorted(result, key=lambda x: x["date"])
 
     # ── 잔고 / 계좌 ──────────────────────────────────────────────

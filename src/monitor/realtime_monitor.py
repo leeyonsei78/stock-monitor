@@ -397,7 +397,7 @@ class RealtimeMonitor:
         try:
             investor_hist = self._api.get_investor_trading_history(ticker, days=10)
         except Exception as e:
-            logger.debug(f"[{ticker}] 투자자 히스토리 조회 실패 (중립 처리): {e}")
+            logger.warning(f"[{ticker}] 투자자 히스토리 조회 실패 (중립 처리): {e}")
 
         if len(ohlcv) < 30:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")

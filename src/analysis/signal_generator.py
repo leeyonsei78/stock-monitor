@@ -167,7 +167,8 @@ class SignalGenerator:
         # 매도 조건 (OR)
         if score <= sell_cfg["min_signal_score"]:
             reasons.append(f"종합 점수 낮음({score:.3f})")
-        if ind.get("rsi", 50) >= sell_cfg["rsi_min"]:
+        # RSI 단독 매도는 종합 점수가 음수일 때만 — 수급 양호 급등주에서 오발화 방지
+        if ind.get("rsi", 50) >= sell_cfg["rsi_min"] and score < 0:
             reasons.append(f"RSI 과매수({ind['rsi']:.1f})")
         if inv_hist.get("foreign_streak", 0) <= -3:
             reasons.append(f"외국인 {abs(inv_hist['foreign_streak'])}일 연속 매도")

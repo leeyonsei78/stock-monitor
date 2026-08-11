@@ -34,6 +34,13 @@ SIGNAL_EMOJI = {
 
 INVESTOR_ARROW = lambda v: "↑" if v > 0 else ("↓" if v < 0 else "→")
 
+# 레버리지·인버스·해외지수 ETF 제외 키워드 (국내 섹터 ETF는 유지)
+ETF_EXCLUDE_KEYWORDS = (
+    "레버리지", "인버스", "2X",
+    "미국", "나스닥", "S&P",
+    "차이나", "베트남", "일본", "유럽", "선진국", "신흥국",
+)
+
 
 class RealtimeMonitor:
     """
@@ -490,6 +497,8 @@ class RealtimeMonitor:
             watchlist_tickers = {s["ticker"] for s in stocks}
             for s in top_vol:
                 if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
+                    if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
+                        continue
                     stocks.append({"ticker": s["ticker"], "name": s["name"]})
         except Exception as e:
             logger.error(f"거래량 상위 조회 실패: {e}")

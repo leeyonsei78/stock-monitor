@@ -154,7 +154,7 @@ buy_conditions:
 
 sell_conditions:
   min_signal_score: -0.50    # 매도 최소 점수
-  rsi_min: 70                # RSI 과매수 기준
+  rsi_min: 70                # RSI 과매수 기준 (2026-08-11: score < 0 일 때만 발동 — 수급 양호 급등주 오발화 방지)
 ```
 
 ## 알림 조정 방법 (알림이 너무 많을 때)
@@ -179,6 +179,7 @@ git push origin main
 - `+0.60` 이상 → 매수
 - `-0.50` 이하 → 매도
 - `-0.70` 이하 → 강한 매도
+- RSI 과매수(≥70) 매도 조건: **종합 점수 < 0 일 때만 발동** (수급 양호 급등주 오발화 방지, 2026-08-11)
 
 ## 투자자 수급 가중치
 | 투자자 | 가중치 | 비고 |
@@ -219,9 +220,12 @@ git push origin main
 - 모든 API 요청 timeout 10초
 
 ## KIS API 투자자 데이터 주의사항
-- `get_investor_trading` (FHKST01010900): 응답 순매수수량 필드는 **`ntby_qty`** (2026-08-07 수정)
+- `get_investor_trading` (FHKST01010900): 응답 순매수수량 필드는 **`frgn_ntby_qty` / `orgn_ntby_qty` / `prsn_ntby_qty` / `pgtr_ntby_qty`** (2026-08-10 수정)
   - 이전 코드 `sll_ntby_qty` 는 존재하지 않는 필드 → 전 종목 수급 점수가 -0.105로 고정되는 버그
   - 파싱 후 전부 0이면 WARNING 로그에 raw 응답 샘플 출력 (필드명 변경 감지용)
+- `get_investor_trading_history` (FHKST01010800): 응답값이 빈 문자열("")로 올 수 있음 → `int(val or "0")` 패턴 필수 (2026-08-11 수정)
+  - 빈 문자열 그대로 `int()` 변환 시 ValueError → 히스토리 전체 누락 → 추세 점수 항상 0
+  - 빈 결과 시 WARNING 로그에 `rt_cd`, `msg1`, `output` 샘플 출력
 - `get_investor_trading` 와 `get_investor_trading_history` 모두 `base=self._quote_url` (실서버) 사용
   - 모의서버는 투자자 API 데이터 미제공
 
@@ -275,12 +279,21 @@ C:\test_stock_auto\
     │   └── signal_generator.py       # 매매 신호 + 종합 의견 생성
     ├── monitor/
     │   ├── realtime_monitor.py       # 실시간 모니터 핵심 + Slack 메시지 포맷
+    │   │                             # ETF_EXCLUDE_KEYWORDS: 레버리지·인버스·해외지수 ETF 제외 (2026-08-11)
     │   └── supabase_store.py         # 쿨다운 DB + 가격 스냅샷 + 토큰 캐시
     ├── notification/slack_bot.py     # Slack 알림
     └── trading/
         ├── order_manager.py          # 주문 실행
         └── manual_trader.py          # Slack 명령어 매매 (VM 이전 후 활성화 예정)
 ```
+
+---
+
+## 스캔 종목 필터링 (2026-08-11 추가)
+거래량 상위 목록에서 아래 키워드 포함 종목 자동 제외 (`realtime_monitor.py` `ETF_EXCLUDE_KEYWORDS`):
+- **제외**: `레버리지`, `인버스`, `2X`, `미국`, `나스닥`, `S&P`, `차이나`, `베트남`, `일본`, `유럽`, `선진국`, `신흥국`
+- **유지**: 국내 섹터 ETF (반도체, 화장품, 2차전지, 바이오 등) + 일반 주식
+- **이유**: 레버리지·인버스는 RSI/수급 지표가 반대로 해석됨, 해외지수 ETF는 국내 외국인·기관 수급 분석이 무의미
 
 ---
 

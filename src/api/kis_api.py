@@ -173,13 +173,16 @@ class KISApi:
             return []
         result = []
         for date, row in df.iterrows():
+            vol = int(row.get("Volume", 0))
+            if vol == 0:
+                continue  # FDR이 당일 미체결 행을 volume=0으로 포함하는 경우 제외
             result.append({
                 "date":   date.strftime("%Y%m%d"),
                 "open":   int(row.get("Open", 0)),
                 "high":   int(row.get("High", 0)),
                 "low":    int(row.get("Low", 0)),
                 "close":  int(row.get("Close", 0)),
-                "volume": int(row.get("Volume", 0)),
+                "volume": vol,
             })
         return result  # fdr은 날짜 오름차순 반환
 

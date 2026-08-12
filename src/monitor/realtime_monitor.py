@@ -493,13 +493,15 @@ class RealtimeMonitor:
             stocks.append({"ticker": ticker, "name": ""})
 
         try:
-            top_vol = self._api.get_top_volume_stocks(limit=self._scan_top_n)
             watchlist_tickers = {s["ticker"] for s in stocks}
-            for s in top_vol:
-                if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
-                    if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
-                        continue
-                    stocks.append({"ticker": s["ticker"], "name": s["name"]})
+            half = self._scan_top_n // 2
+            for market, n in (("J", half), ("Q", self._scan_top_n - half)):
+                for s in self._api.get_top_volume_stocks(market=market, limit=n):
+                    if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
+                        if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
+                            continue
+                        stocks.append({"ticker": s["ticker"], "name": s["name"]})
+                        watchlist_tickers.add(s["ticker"])
         except Exception as e:
             logger.error(f"거래량 상위 조회 실패: {e}")
 

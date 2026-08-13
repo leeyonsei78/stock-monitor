@@ -181,6 +181,9 @@ git push origin main
 - `-0.50` 이하 → 매도
 - `-0.70` 이하 → 강한 매도
 - RSI 과매수(≥70) 매도 조건: **종합 점수 < 0 일 때만 발동** (수급 양호 급등주 오발화 방지, 2026-08-11)
+- **RSI 신호 공식 (2026-08-13 수정)**: oversold 경계(RSI=30)에서 신호가 0.0으로 떨어지고 RSI=31이 0.3이던 역전 버그 수정
+  - 수정 전: `(oversold - rsi) / oversold` → RSI=30일 때 0.0, RSI=31일 때 0.3 (역전)
+  - 수정 후: `0.3 + (oversold - rsi) / oversold * 0.7` → RSI=30 → 0.30, RSI=15 → 0.65, RSI=0 → 1.0 (연속적)
 
 ## 투자자 수급 가중치
 | 투자자 | 가중치 | 비고 |
@@ -229,6 +232,9 @@ git push origin main
   - 빈 결과 시 WARNING 로그에 `rt_cd`, `msg1`, `output` 샘플 출력
 - `get_investor_trading` 와 `get_investor_trading_history` 모두 `base=self._quote_url` (실서버) 사용
   - 모의서버는 투자자 API 데이터 미제공
+- **시장 코드 파라미터 (2026-08-13 수정)**: `get_current_price` / `get_investor_trading` / `get_investor_trading_history` 모두 `market` 파라미터 추가 (기본값 `"J"`)
+  - 코스닥 스캔 추가(2026-08-12) 후 코스닥 종목에 `"J"`(코스피) 코드로 호출 → API 오류 → 15종목 전부 스킵되는 버그
+  - `_scan_once()`에서 종목별 시장코드를 dict에 저장(`"market": "J"/"Q"`) → `_analyze_stock(market=)`으로 전달
 
 ## OHLCV 데이터 주의사항
 - KIS 모의 API는 일봉 데이터(`inquire-daily-chartprice`) 미지원 → **FinanceDataReader**로 대체
@@ -297,10 +303,11 @@ C:\test_stock_auto\
 - **유지**: 국내 섹터 ETF (반도체, 화장품, 2차전지, 바이오 등) + 일반 주식
 - **이유**: 레버리지·인버스는 RSI/수급 지표가 반대로 해석됨, 해외지수 ETF는 국내 외국인·기관 수급 분석이 무의미
 
-## 스캔 시장 범위 (2026-08-12 변경)
+## 스캔 시장 범위 (2026-08-12 변경 / 2026-08-13 버그 수정)
 - 기존: `get_top_volume_stocks(market="J")` → **코스피 종목만** 스캔
 - 변경: 코스피(J) + 코스닥(Q) 각 절반씩 스캔 (`scan_top_n=30`이면 코스피 15 + 코스닥 15)
 - `realtime_monitor.py` `_scan_once()` 에서 두 시장을 순서대로 조회 후 중복 ticker 제거
+- **주의**: 코스닥 종목은 분석 API 호출 시 반드시 `market="Q"` 전달 필요 (2026-08-13 수정)
 
 ---
 

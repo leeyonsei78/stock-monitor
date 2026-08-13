@@ -42,9 +42,11 @@ class TechnicalIndicators:
         oversold = cfg["oversold"]
         overbought = cfg["overbought"]
         if rsi <= oversold:
-            return min(1.0, (oversold - rsi) / oversold)       # 강한 매수
+            # RSI=30 → 0.30, RSI=0 → 1.0 (연속적으로 증가)
+            return min(1.0, 0.3 + (oversold - rsi) / oversold * 0.7)
         elif rsi >= overbought:
-            return max(-1.0, -(rsi - overbought) / (100 - overbought))  # 강한 매도
+            # RSI=70 → -0.30, RSI=100 → -1.0 (연속적으로 감소)
+            return max(-1.0, -(0.3 + (rsi - overbought) / (100 - overbought) * 0.7))
         elif rsi < 50:
             return 0.3   # 약한 매수
         else:

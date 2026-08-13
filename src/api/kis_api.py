@@ -141,12 +141,12 @@ class KISApi:
         raise last_err
 
     # ── 주가 조회 ────────────────────────────────────────────────
-    def get_current_price(self, ticker: str) -> dict:
+    def get_current_price(self, ticker: str, market: str = "J") -> dict:
         """현재가 및 기본 정보 조회"""
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-price",
             "FHKST01010100",
-            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+            {"FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": ticker},
             base=self._quote_url,
         )
         out = data["output"]
@@ -213,7 +213,7 @@ class KISApi:
         return result
 
     # ── 투자자 동향 ──────────────────────────────────────────────
-    def get_investor_trading(self, ticker: str) -> dict:
+    def get_investor_trading(self, ticker: str, market: str = "J") -> dict:
         """투자자별 매매 동향 (외국인/기관/개인/프로그램)
         FHKST01010900: output 각 row = 날짜별 데이터 (첫 번째 row = 당일)
           frgn_ntby_qty: 외국인 순매수수량
@@ -224,7 +224,7 @@ class KISApi:
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
             "FHKST01010900",
-            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+            {"FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": ticker},
             base=self._quote_url,
         )
         out = data.get("output", [])
@@ -245,7 +245,7 @@ class KISApi:
             logger.warning(f"[{ticker}] 투자자 데이터 전부 0 — 필드 확인 필요. raw sample: {out[:2] if out else '[]'}")
         return result
 
-    def get_investor_trading_history(self, ticker: str, days: int = 10) -> list[dict]:
+    def get_investor_trading_history(self, ticker: str, days: int = 10, market: str = "J") -> list[dict]:
         """투자자별 매매 동향 히스토리 (최근 N일)"""
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -253,7 +253,7 @@ class KISApi:
             "/uapi/domestic-stock/v1/quotations/inquire-daily-investor",
             "FHKST01010800",
             {
-                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": ticker,
                 "FID_INPUT_DATE_1": start_date,
                 "FID_INPUT_DATE_2": end_date,

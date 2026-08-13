@@ -391,18 +391,18 @@ class RealtimeMonitor:
         return "\n".join(blocks)
 
     # ── 단일 종목 분석 ────────────────────────────────────────────
-    def _analyze_stock(self, ticker: str, name: str) -> Optional[TradeSignal]:
+    def _analyze_stock(self, ticker: str, name: str, market: str = "J") -> Optional[TradeSignal]:
         try:
-            current_info     = self._api.get_current_price(ticker)
+            current_info     = self._api.get_current_price(ticker, market=market)
             ohlcv            = self._api.get_daily_ohlcv(ticker, period=120)
-            investor_current = self._api.get_investor_trading(ticker)
+            investor_current = self._api.get_investor_trading(ticker, market=market)
         except Exception as e:
             logger.warning(f"[{ticker}] 데이터 조회 실패: {e}")
             return None
 
         investor_hist = []
         try:
-            investor_hist = self._api.get_investor_trading_history(ticker, days=10)
+            investor_hist = self._api.get_investor_trading_history(ticker, days=10, market=market)
         except Exception as e:
             logger.warning(f"[{ticker}] 투자자 히스토리 조회 실패 (중립 처리): {e}")
 
@@ -490,7 +490,7 @@ class RealtimeMonitor:
         stocks: list[dict] = []
 
         for ticker in self._watchlist:
-            stocks.append({"ticker": ticker, "name": ""})
+            stocks.append({"ticker": ticker, "name": "", "market": "J"})
 
         try:
             watchlist_tickers = {s["ticker"] for s in stocks}
@@ -500,7 +500,7 @@ class RealtimeMonitor:
                     if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
                         if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
                             continue
-                        stocks.append({"ticker": s["ticker"], "name": s["name"]})
+                        stocks.append({"ticker": s["ticker"], "name": s["name"], "market": market})
                         watchlist_tickers.add(s["ticker"])
         except Exception as e:
             logger.error(f"거래량 상위 조회 실패: {e}")
@@ -522,7 +522,7 @@ class RealtimeMonitor:
                 break
 
             try:
-                sig = self._analyze_stock(stock["ticker"], stock["name"])
+                sig = self._analyze_stock(stock["ticker"], stock["name"], stock.get("market", "J"))
                 if sig is None:
                     skipped += 1
                 else:

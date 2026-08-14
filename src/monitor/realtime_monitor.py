@@ -400,6 +400,20 @@ class RealtimeMonitor:
             logger.warning(f"[{ticker}] 데이터 조회 실패: {e}")
             return None
 
+        # 오늘 실시간 거래량을 OHLCV에 반영
+        # FDR은 당일 데이터를 volume=0으로 포함 후 필터링하므로 오늘 행이 없는 경우가 많음.
+        # 거래량 상위 종목은 오늘 거래량이 높은 종목인데 FDR 어제 데이터로 vol_ratio 계산하면 조건 미달.
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        if ohlcv and ohlcv[-1]["date"] < today_str and current_info.get("volume", 0) > 0:
+            ohlcv = ohlcv + [{
+                "date":   today_str,
+                "open":   current_info.get("open",  ohlcv[-1]["close"]),
+                "high":   current_info.get("high",  ohlcv[-1]["close"]),
+                "low":    current_info.get("low",   ohlcv[-1]["close"]),
+                "close":  current_info.get("price", ohlcv[-1]["close"]),
+                "volume": current_info["volume"],
+            }]
+
         investor_hist = []
         try:
             investor_hist = self._api.get_investor_trading_history(ticker, days=10, market=market)
@@ -492,18 +506,20 @@ class RealtimeMonitor:
         for ticker in self._watchlist:
             stocks.append({"ticker": ticker, "name": "", "market": "J"})
 
-        try:
-            watchlist_tickers = {s["ticker"] for s in stocks}
-            half = self._scan_top_n // 2
-            for market, n in (("J", half), ("Q", self._scan_top_n - half)):
+        watchlist_tickers = {s["ticker"] for s in stocks}
+        half = self._scan_top_n // 2
+        # 시장별 독립 에러 처리: 코스피 실패해도 코스닥은 계속 시도
+        for market, n in (("J", half), ("Q", self._scan_top_n - half)):
+            try:
                 for s in self._api.get_top_volume_stocks(market=market, limit=n):
                     if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
                         if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
                             continue
                         stocks.append({"ticker": s["ticker"], "name": s["name"], "market": market})
                         watchlist_tickers.add(s["ticker"])
-        except Exception as e:
-            logger.error(f"거래량 상위 조회 실패: {e}")
+                logger.info(f"거래량 상위 조회 완료 [{market}]: {n}개 요청")
+            except Exception as e:
+                logger.error(f"거래량 상위 조회 실패 [{market}]: {e}")
 
         total      = len(stocks)
         buy_count  = 0

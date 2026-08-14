@@ -49,8 +49,10 @@ class TechnicalIndicators:
             return max(-1.0, -(0.3 + (rsi - overbought) / (100 - overbought) * 0.7))
         elif rsi < 50:
             return 0.3   # 약한 매수
+        elif rsi < 60:
+            return 0.0   # 중립: 매수 허용 범위(≤60)이므로 패널티 없음 (기존 -0.1 → 0.0)
         else:
-            return -0.1  # 중립~약한 매도
+            return -0.1  # 약한 매도 압력 (RSI 60~70)
 
     # ── MACD ─────────────────────────────────────────────────────
     def calc_macd(self, df: pd.DataFrame) -> pd.DataFrame:

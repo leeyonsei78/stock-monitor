@@ -195,13 +195,21 @@ class SignalGenerator:
             meets_all = False
         else:
             buy_reasons.append(f"거래량 충분({vol_ratio:.1f}x)")
-        if buy_cfg["foreign_net_buy"] and inv_current["scores"].get("foreign", 0) <= 0:
-            meets_all = False
-        else:
+        # 원시 수량으로 확인 (score=-0.3이면 qty=0인데 score 기준 혼동 방지)
+        foreign_qty = inv_current["raw"].get("foreign", 0)
+        if buy_cfg["foreign_net_buy"]:
+            if foreign_qty <= 0:
+                meets_all = False
+            else:
+                buy_reasons.append("외국인 순매수")
+        elif foreign_qty > 0:
             buy_reasons.append("외국인 순매수")
-        if buy_cfg["price_above_ma20"] and current_price < ma20:
-            meets_all = False
-        else:
+        if buy_cfg["price_above_ma20"]:
+            if current_price < ma20:
+                meets_all = False
+            else:
+                buy_reasons.append("20일선 위")
+        elif current_price > ma20:
             buy_reasons.append("20일선 위")
 
         if meets_all:

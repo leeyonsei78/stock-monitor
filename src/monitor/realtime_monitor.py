@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
 import yaml
+import holidays as kr_cal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -75,6 +76,9 @@ class RealtimeMonitor:
     def _is_market_open() -> bool:
         now = datetime.now(ZoneInfo("Asia/Seoul"))
         if now.weekday() >= 5:
+            return False
+        # 한국 공휴일·대체공휴일 체크
+        if now.date() in kr_cal.KR(years=now.year):
             return False
         t = (now.hour, now.minute)
         return MARKET_OPEN <= t < MARKET_CLOSE

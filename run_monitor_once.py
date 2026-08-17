@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import holidays as kr_cal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -22,6 +23,9 @@ MARKET_CLOSE = (18, 0)   # 시간외 종료
 def is_market_open() -> bool:
     now = datetime.now(ZoneInfo("Asia/Seoul"))
     if now.weekday() >= 5:
+        return False
+    # 한국 공휴일·대체공휴일 체크 (광복절 대체공휴일 등 포함)
+    if now.date() in kr_cal.KR(years=now.year):
         return False
     t = (now.hour, now.minute)
     return MARKET_OPEN <= t < MARKET_CLOSE

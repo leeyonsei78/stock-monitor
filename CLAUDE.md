@@ -246,6 +246,14 @@ git push origin main
 - 스캔 완료 로그: `스킵 N개 | 오류 N개 | 소요 N초` 로 구분
 - **FDR volume=0 행 제거 (2026-08-12)**: 장중 실행 시 FDR이 당일 날짜를 volume=0으로 포함 → `vol_ratio=0` → 매수 조건 항상 탈락. `get_daily_ohlcv`에서 volume=0 행을 필터링하여 해결
 - **오늘 실시간 거래량 주입 (2026-08-14)**: FDR volume=0 필터 후 오늘 행이 없으면 `get_current_price` 실시간 값으로 오늘 OHLCV 행 추가 (`_analyze_stock` 내부). 거래량 상위 종목은 오늘 거래량이 높은 종목인데 FDR 어제 데이터 기준 vol_ratio < 1.3 → 매수 조건 미달 버그 수정
+- **공휴일 동작**: 휴장일에 KIS API를 호출하면 전 API가 마지막 거래일 데이터를 반환하고 `acml_vol=0`. 오늘 OHLCV 주입 조건(`volume > 0`)이 불충족되어 주입 안 됨 → 전일 데이터 기준으로 신호 계산됨 (2026-08-17 분석)
+
+## 공휴일·대체공휴일 처리 (2026-08-17 추가)
+- **버그**: `is_market_open()`이 `weekday() >= 5`(토·일)만 체크 → 대체공휴일(예: 광복절 토→월 대체)에 스캔 실행, 전일 데이터 기반 신호 Slack 발송
+- **수정**: `holidays.KR(years=now.year)` 로 한국 법정 공휴일·대체공휴일 판단 추가
+  - 수정 파일: `run_monitor_once.py` `is_market_open()`, `src/monitor/realtime_monitor.py` `_is_market_open()`
+  - `requirements.txt`에 `holidays>=0.46` 추가 (대체공휴일 포함 버전)
+- **휴장일 데이터 특성**: KIS API는 휴장일에 전 종목 마지막 거래일 데이터를 그대로 반환함 → 데이터가 실제처럼 보이지만 전일 종가·수급 기준이므로 신호 무의미
 
 ## Supabase 테이블
 - `stock_signal_log`: 알림 쿨다운 관리

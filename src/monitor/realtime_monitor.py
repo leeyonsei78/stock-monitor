@@ -269,9 +269,10 @@ class RealtimeMonitor:
         vol        = current_info.get("volume", 0)
         vol_ratio  = ind.get("volume_ratio", 1.0)
         vol_flag   = "🔥" if vol_ratio >= 2.0 else ("⬆️" if vol_ratio >= 1.3 else "")
+        vol_label  = f"{vol:,}주" if vol > 0 else "장전 — 미집계"
         vol_block  = (
             f"📊 *거래량*\n"
-            f"현재: {vol:,}주  |  평균 대비: *{vol_ratio:.1f}배*  {vol_flag}"
+            f"현재: {vol_label}  |  평균 대비: *{vol_ratio:.1f}배*  {vol_flag}"
         )
 
         # ── 투자자 동향 ──
@@ -457,7 +458,7 @@ class RealtimeMonitor:
         minute_candles: list = []
         if not after_hours:
             try:
-                minute_candles = self._api.get_minute_ohlcv(ticker)
+                minute_candles = self._api.get_minute_ohlcv(ticker, market=market)
             except Exception as e:
                 logger.warning(f"[{ticker}] 분봉 조회 실패: {e}")
 

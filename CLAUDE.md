@@ -150,7 +150,7 @@ buy_conditions:
   min_signal_score: 0.35     # 매수 최소 점수 (2026-08-14: 0.40→0.35 — RSI 50-60 중립화 연동 완화)
   rsi_max: 60                # RSI 상한 (2026-08-06 55→60으로 완화)
   volume_min_ratio: 1.3      # 거래량 배율 조건
-  foreign_net_buy: true      # 외국인 순매수 필수 (원시 수량 기준 — score 기준 아님)
+  foreign_net_buy: false     # 외국인 순매수 필수 조건 해제 (2026-08-18: AND 조건 완화)
   price_above_ma20: false    # MA20 조건 해제 (2026-08-12: 과매도 반등 기회 차단 문제)
 
 sell_conditions:

@@ -186,14 +186,14 @@ class KISApi:
             })
         return result  # fdr은 날짜 오름차순 반환
 
-    def get_minute_ohlcv(self, ticker: str, interval: int = 1) -> list[dict]:
+    def get_minute_ohlcv(self, ticker: str, interval: int = 1, market: str = "J") -> list[dict]:
         """분봉 데이터 조회"""
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
             "FHKST03010200",
             {
                 "FID_ETC_CLS_CODE": "",
-                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": ticker,
                 "FID_INPUT_HOUR_1": datetime.now().strftime("%H%M%S"),
                 "FID_PW_DATA_INCU_YN": "N",

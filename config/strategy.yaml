@@ -67,7 +67,7 @@ buy_conditions:
   min_signal_score: 0.35        # 최소 매수 신호 점수 (0~1) — 2026-08-14: 0.40→0.35 완화 (RSI 50-60 중립화 연동)
   rsi_max: 60                   # RSI 60 이하일 때만 매수
   volume_min_ratio: 1.3         # 평균 거래량의 1.3배 이상
-  foreign_net_buy: true         # 외국인 순매수 필수
+  foreign_net_buy: false        # 외국인 순매수 필수 조건 해제 (2026-08-18: AND 조건 완화)
   price_above_ma20: false       # 20일 이평선 조건 해제 (과매도 반등 기회 포착)
 
 # ==========================================

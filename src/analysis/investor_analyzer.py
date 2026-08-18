@@ -72,6 +72,8 @@ class InvestorAnalyzer:
             base = 0.6
         elif net_qty > 0:
             base = 0.3
+        elif net_qty == 0:
+            base = 0.0  # 매매 없음은 중립 (net_qty > 0이 False지만 -0.3으로 빠지는 버그 방지)
         elif net_qty > -strong_threshold * 0.5:
             base = -0.3
         elif net_qty > -strong_threshold:

@@ -213,13 +213,12 @@ class KISApi:
         return result
 
     # ── 투자자 동향 ──────────────────────────────────────────────
-    def get_investor_trading(self, ticker: str, market: str = "J") -> dict:
-        """투자자별 매매 동향 (외국인/기관/개인/프로그램)
-        FHKST01010900: output 각 row = 날짜별 데이터 (첫 번째 row = 당일)
-          frgn_ntby_qty: 외국인 순매수수량
-          orgn_ntby_qty: 기관 순매수수량
-          prsn_ntby_qty: 개인 순매수수량
-          pgtr_ntby_qty: 프로그램 순매수수량
+    def get_investor_data(self, ticker: str, market: str = "J") -> tuple[dict, list[dict]]:
+        """투자자 당일 + 히스토리를 FHKST01010900 한 번 호출로 반환.
+        FHKST01010800(inquire-daily-investor)은 404 오류로 사용 불가 (2026-08-19 확인).
+        FHKST01010900 output: 30개 행, row[0]=당일(또는 최근 거래일), 이하 과거 순.
+        응답 필드: frgn_ntby_qty / orgn_ntby_qty / prsn_ntby_qty (pgtr 없음 → program=0).
+        반환: (current_dict, history_list_asc)
         """
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
@@ -228,67 +227,54 @@ class KISApi:
             base=self._quote_url,
         )
         out = data.get("output", [])
-        result = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
-        FIELDS = (
-            ("foreign",     "frgn_ntby_qty"),
-            ("institution", "orgn_ntby_qty"),
-            ("individual",  "prsn_ntby_qty"),
-            ("program",     "pgtr_ntby_qty"),
-        )
-        # 첫 번째 row가 장전·데이터 미집계로 전부 0일 수 있으므로 non-zero 행을 찾아 사용
-        for i, row in enumerate(out):
-            parsed = {}
-            for key, field in FIELDS:
-                try:
-                    parsed[key] = int(row.get(field, "0") or "0")
-                except ValueError:
-                    parsed[key] = 0
-            if any(parsed.values()):
-                result = parsed
-                if i > 0:
-                    date_str = row.get("stck_bsop_date", "?")
-                    logger.info(f"[{ticker}] 당일 투자자 데이터 미집계 — {date_str} 전일 데이터 사용 (row {i})")
-                break
-        if not any(result.values()):
-            logger.warning(f"[{ticker}] 투자자 데이터 전부 0 — 필드 확인 필요. raw sample: {out[:2] if out else '[]'}")
-        return result
 
-    def get_investor_trading_history(self, ticker: str, days: int = 10, market: str = "J") -> list[dict]:
-        """투자자별 매매 동향 히스토리 (최근 N일)"""
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
-        data = self._get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-investor",
-            "FHKST01010800",
-            {
-                "FID_COND_MRKT_DIV_CODE": market,
-                "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_DATE_1": start_date,
-                "FID_INPUT_DATE_2": end_date,
-            },
-            base=self._quote_url,
-        )
-        result = []
-        for row in data.get("output", []):
-            if not row.get("stck_bsop_date"):
+        def _parse_row(row: dict) -> dict:
+            def _int(v): return int(v or "0") if v is not None else 0
+            return {
+                "foreign":     _int(row.get("frgn_ntby_qty")),
+                "institution": _int(row.get("orgn_ntby_qty")),
+                "individual":  _int(row.get("prsn_ntby_qty")),
+                "program":     0,  # pgtr_ntby_qty 미제공 확인
+            }
+
+        # ── 당일 (non-zero 행 우선) ──────────────────────────────
+        current = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
+        current_date = ""
+        for i, row in enumerate(out):
+            parsed = _parse_row(row)
+            if any(parsed.values()):
+                current = parsed
+                current_date = row.get("stck_bsop_date", "")
+                if i > 0:
+                    logger.info(f"[{ticker}] 장전 미집계 — {current_date} 전일 데이터 사용")
+                break
+        if not any(current.values()):
+            logger.warning(f"[{ticker}] 투자자 데이터 전부 0. raw: {out[:1]}")
+
+        # ── 히스토리 (당일 제외, 날짜 오름차순) ─────────────────
+        history = []
+        for row in out:
+            date = row.get("stck_bsop_date", "")
+            if not date or date == current_date:
                 continue
             try:
-                result.append({
-                    "date": row["stck_bsop_date"],
-                    "foreign": int(row.get("frgn_ntby_qty", "0") or "0"),
-                    "institution": int(row.get("orgn_ntby_qty", "0") or "0"),
-                    "individual": int(row.get("indv_ntby_qty", "0") or "0"),
-                    "program": int(row.get("pgtr_ntby_qty", "0") or "0"),
-                })
-            except (ValueError, TypeError) as e:
-                logger.warning(f"[{ticker}] 히스토리 행 파싱 실패: {e} — row={row}")
-        if not result:
-            logger.warning(
-                f"[{ticker}] 투자자 히스토리 빈 결과 — "
-                f"rt_cd={data.get('rt_cd')}, msg={data.get('msg1')}, "
-                f"output_sample={data.get('output', [])[:1]}"
-            )
-        return sorted(result, key=lambda x: x["date"])
+                entry = _parse_row(row)
+                entry["date"] = date
+                history.append(entry)
+            except Exception:
+                pass
+        history.sort(key=lambda x: x["date"])
+
+        return current, history
+
+    # ── 하위 호환 래퍼 (기존 호출부 유지) ────────────────────────
+    def get_investor_trading(self, ticker: str, market: str = "J") -> dict:
+        current, _ = self.get_investor_data(ticker, market)
+        return current
+
+    def get_investor_trading_history(self, ticker: str, days: int = 10, market: str = "J") -> list[dict]:
+        _, history = self.get_investor_data(ticker, market)
+        return history[-days:] if len(history) > days else history
 
     # ── 잔고 / 계좌 ──────────────────────────────────────────────
     def get_balance(self) -> dict:

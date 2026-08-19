@@ -25,7 +25,8 @@ sections: list[str] = [f"🔬 *KIS API 원시 응답 진단* — {now_kst}"]
 
 
 def add_section(title: str, content: str):
-    sections.append(f"*{title}*\n```{content[:900]}```")
+    # 백틱 3개 쓰면 GitHub Actions 로그가 이후 내용을 숨김 → 단순 텍스트로
+    sections.append(f"*{title}*\n{content[:900]}")
 
 
 # ── Supabase + KISApi 초기화 (토큰 캐시 사용) ───────────────────

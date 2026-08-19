@@ -1,7 +1,7 @@
 """
 KIS API 원시 응답 확인 스크립트
-장 중(09:00~15:30 KST)에 실행하면 실제 응답 구조를 슬랙으로 전송합니다.
 사용: python debug_api_raw.py
+결과는 슬랙 + stdout 양쪽으로 출력됩니다.
 """
 import json
 import os
@@ -11,22 +11,35 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.api.kis_api import KISApi
-from src.notification.slack_bot import SlackNotifier
 
-TICKER = "005930"  # 삼성전자
+from src.api.kis_api import KISApi
+from src.monitor.supabase_store import SupabaseSignalStore
+from slack_sdk import WebClient
+
+TICKER = "005930"
 MARKET = "J"
 
 now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M KST")
-lines = [f"🔬 *KIS API 원시 응답 진단* — {now_kst}\n"]
+sections: list[str] = [f"🔬 *KIS API 원시 응답 진단* — {now_kst}"]
 
-def section(title: str, content: str):
-    lines.append(f"*{title}*\n```{content[:800]}```")
+
+def add_section(title: str, content: str):
+    sections.append(f"*{title}*\n```{content[:900]}```")
+
+
+# ── Supabase + KISApi 초기화 (토큰 캐시 사용) ───────────────────
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+store = None
+if supabase_url and supabase_key:
+    store = SupabaseSignalStore(supabase_url, supabase_key)
+    print("Supabase 연결 완료 — 토큰 캐시 사용")
+else:
+    print("SUPABASE 미설정 — 토큰 신규 발급")
 
 try:
-    api = KISApi()
+    api = KISApi(store=store)
 except Exception as e:
     print(f"KISApi 초기화 실패: {e}")
     sys.exit(1)
@@ -48,36 +61,12 @@ try:
             info += f"[row 1] {json.dumps(out[1], ensure_ascii=False)}"
     elif isinstance(out, dict):
         info += json.dumps(out, ensure_ascii=False)
-    section("1) inquire-investor (FHKST01010900) — 당일 투자자", info)
+    add_section("1) inquire-investor (FHKST01010900) — 당일 투자자", info)
 except Exception as e:
-    section("1) inquire-investor 오류", str(e))
+    add_section("1) inquire-investor 오류", str(e))
 
 
-# ── 2. 투자자 히스토리 (FHKST01010800) ──────────────────────────
-try:
-    end = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=14)).strftime("%Y%m%d")
-    raw = api._get(
-        "/uapi/domestic-stock/v1/quotations/inquire-daily-investor",
-        "FHKST01010800",
-        {
-            "FID_COND_MRKT_DIV_CODE": MARKET,
-            "FID_INPUT_ISCD": TICKER,
-            "FID_INPUT_DATE_1": start,
-            "FID_INPUT_DATE_2": end,
-        },
-        base=api._quote_url,
-    )
-    out = raw.get("output", [])
-    info = f"output 행수={len(out) if isinstance(out, list) else 'N/A'}\n"
-    if isinstance(out, list) and out:
-        info += f"[row 0] {json.dumps(out[0], ensure_ascii=False)}"
-    section("2) inquire-daily-investor (FHKST01010800) — 투자자 히스토리", info)
-except Exception as e:
-    section("2) inquire-daily-investor 오류", str(e))
-
-
-# ── 3. 거래량 상위 KOSPI — 몇 개 반환되는지 ──────────────────────
+# ── 2. 거래량 상위 KOSPI ────────────────────────────────────────
 try:
     raw = api._get(
         "/uapi/domestic-stock/v1/quotations/volume-rank",
@@ -99,22 +88,25 @@ try:
     )
     out = raw.get("output", [])
     info = f"총 반환 행수: {len(out)}\n"
-    for i, row in enumerate(out[:25]):
+    for i, row in enumerate(out[:20]):
         info += f"{i+1:2d}. [{row.get('mksc_shrn_iscd','')}] {row.get('hts_kor_isnm','')}\n"
-    section("3) volume-rank KOSPI — 상위 25개", info)
+    add_section("2) volume-rank KOSPI — 상위 20개", info)
 except Exception as e:
-    section("3) volume-rank 오류", str(e))
+    add_section("2) volume-rank 오류", str(e))
 
 
-# ── 슬랙 전송 ────────────────────────────────────────────────────
-full_msg = "\n".join(lines)
+# ── 슬랙 전송 (WebClient 직접 사용 — 오류 즉시 출력) ────────────
+full_msg = "\n\n".join(sections)
 print(full_msg)
 
-slack_token = os.getenv("SLACK_BOT_TOKEN")
+slack_token   = os.getenv("SLACK_BOT_TOKEN")
 slack_channel = os.getenv("SLACK_CHANNEL_ID")
 if slack_token and slack_channel:
-    notifier = SlackNotifier()
-    notifier.send_sync(full_msg)
-    print("\n슬랙 전송 완료")
+    try:
+        client = WebClient(token=slack_token)
+        resp = client.chat_postMessage(channel=slack_channel, text=full_msg)
+        print(f"\n슬랙 전송 완료 (ts={resp['ts']})")
+    except Exception as e:
+        print(f"\n슬랙 전송 실패: {e}")
 else:
-    print("\n슬랙 미설정 — 위 출력 결과를 확인하세요")
+    print("\nSLACK_BOT_TOKEN / SLACK_CHANNEL_ID 미설정 — 슬랙 전송 스킵")

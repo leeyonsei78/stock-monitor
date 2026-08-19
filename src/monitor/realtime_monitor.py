@@ -514,15 +514,20 @@ class RealtimeMonitor:
         watchlist_tickers = {s["ticker"] for s in stocks}
         half = self._scan_top_n // 2
         # 시장별 독립 에러 처리: 코스피 실패해도 코스닥은 계속 시도
+        # API는 최대 50개 요청 → watchlist·ETF 필터링 후 목표 n개 확보
         for market, n in (("J", half), ("Q", self._scan_top_n - half)):
             try:
-                for s in self._api.get_top_volume_stocks(market=market, limit=n):
+                added = 0
+                for s in self._api.get_top_volume_stocks(market=market, limit=50):
+                    if added >= n:
+                        break
                     if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
                         if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
                             continue
                         stocks.append({"ticker": s["ticker"], "name": s["name"], "market": market})
                         watchlist_tickers.add(s["ticker"])
-                logger.info(f"거래량 상위 조회 완료 [{market}]: {n}개 요청")
+                        added += 1
+                logger.info(f"거래량 상위 조회 완료 [{market}]: {added}개 추가 (목표 {n}개)")
             except Exception as e:
                 logger.error(f"거래량 상위 조회 실패 [{market}]: {e}")
 

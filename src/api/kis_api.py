@@ -229,18 +229,26 @@ class KISApi:
         )
         out = data.get("output", [])
         result = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
-        if out:
-            row = out[0]  # 첫 번째 row = 당일 데이터
-            for key, field in (
-                ("foreign",     "frgn_ntby_qty"),
-                ("institution", "orgn_ntby_qty"),
-                ("individual",  "prsn_ntby_qty"),
-                ("program",     "pgtr_ntby_qty"),
-            ):
+        FIELDS = (
+            ("foreign",     "frgn_ntby_qty"),
+            ("institution", "orgn_ntby_qty"),
+            ("individual",  "prsn_ntby_qty"),
+            ("program",     "pgtr_ntby_qty"),
+        )
+        # 첫 번째 row가 장전·데이터 미집계로 전부 0일 수 있으므로 non-zero 행을 찾아 사용
+        for i, row in enumerate(out):
+            parsed = {}
+            for key, field in FIELDS:
                 try:
-                    result[key] = int(row.get(field, "0") or "0")
+                    parsed[key] = int(row.get(field, "0") or "0")
                 except ValueError:
-                    pass
+                    parsed[key] = 0
+            if any(parsed.values()):
+                result = parsed
+                if i > 0:
+                    date_str = row.get("stck_bsop_date", "?")
+                    logger.info(f"[{ticker}] 당일 투자자 데이터 미집계 — {date_str} 전일 데이터 사용 (row {i})")
+                break
         if not any(result.values()):
             logger.warning(f"[{ticker}] 투자자 데이터 전부 0 — 필드 확인 필요. raw sample: {out[:2] if out else '[]'}")
         return result

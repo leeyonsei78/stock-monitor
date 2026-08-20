@@ -191,8 +191,14 @@ class SignalGenerator:
             meets_all = False
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
+        day_return = ind.get("day_return", 0.0)
         if vol_ratio < buy_cfg["volume_min_ratio"]:
-            meets_all = False
+            if day_return >= 0.05:
+                # 최근 급락으로 거래량 기준선(중앙값) 자체가 높아진 상태에서
+                # 당일 5% 이상 급등은 거래량 배율 미달이어도 참여 강도가 충분한 것으로 간주 (2026-08-21)
+                buy_reasons.append(f"급등 거래량 예외(당일 {day_return*100:.1f}%)")
+            else:
+                meets_all = False
         else:
             buy_reasons.append(f"거래량 충분({vol_ratio:.1f}x)")
         # 원시 수량으로 확인 (score=-0.3이면 qty=0인데 score 기준 혼동 방지)

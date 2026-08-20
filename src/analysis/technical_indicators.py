@@ -109,23 +109,27 @@ class TechnicalIndicators:
             "%b": (df["close"] - (mid - std_dev * std)) / (2 * std_dev * std),
         })
 
-    def bollinger_signal(self, bb_df: pd.DataFrame, current_price: float) -> float:
-        """볼린저밴드 기반 매매 신호 (-1 ~ +1)"""
+    def bollinger_signal(self, bb_df: pd.DataFrame, current_price: float, day_return: float = 0.0) -> float:
+        """볼린저밴드 기반 매매 신호 (-1 ~ +1)
+        당일 +3% 이상 급등 중이면 상단권 진입을 과매수 소진이 아닌 돌파 지속으로 해석
+        (급락 후 급반등 시 20일 밴드가 좁아져 있어 정상적인 반등도 "과매수 매도"로 오판되는 문제 수정, 2026-08-21)
+        """
         if bb_df.empty or bb_df["upper"].isna().iloc[-1]:
             return 0.0
         upper = bb_df["upper"].iloc[-1]
         lower = bb_df["lower"].iloc[-1]
         mid = bb_df["mid"].iloc[-1]
         pct_b = bb_df["%b"].iloc[-1]
+        breakout = day_return >= 0.03
 
         if pct_b <= 0:
             return 1.0    # 하단 이탈 → 강한 매수
         elif pct_b <= 0.2:
             return 0.6
         elif pct_b >= 1.0:
-            return -1.0   # 상단 이탈 → 강한 매도
+            return 0.8 if breakout else -1.0   # 상단 이탈: 급등 동반이면 돌파, 아니면 과매수 매도
         elif pct_b >= 0.8:
-            return -0.6
+            return 0.5 if breakout else -0.6
         return 0.0
 
     # ── 이동평균선 ───────────────────────────────────────────────
@@ -150,6 +154,10 @@ class TechnicalIndicators:
                 score = 0.8   # 정배열
             elif current_price < ma5 < ma20 < ma60:
                 score = -0.8  # 역배열
+            elif current_price > ma5 > ma20:
+                score = 0.6   # 단중기 정배열, 60일선 아직 미회복 (급락 후 반등 구간, 2026-08-21 추가)
+            elif current_price < ma5 < ma20:
+                score = -0.6
             elif current_price > ma20:
                 score = 0.4
             elif current_price < ma20:
@@ -170,7 +178,9 @@ class TechnicalIndicators:
         ma_period = cfg["ma_period"]
         surge_ratio = cfg["surge_ratio"]
 
-        vol_ma = df["volume"].rolling(ma_period).mean()
+        # 평균 대신 중앙값 사용: 최근 급락 구간의 이상 거래량이 평균을 왜곡해
+        # 반등일 정상 거래량까지 "평균 미달"로 판정하는 문제 완화 (2026-08-21)
+        vol_ma = df["volume"].rolling(ma_period).median()
         current_vol = df["volume"].iloc[-1]
         vol_ratio = current_vol / vol_ma.iloc[-1] if vol_ma.iloc[-1] > 0 else 1.0
 
@@ -287,8 +297,11 @@ class TechnicalIndicators:
         macd_df = self.calc_macd(df)
         macd_sig = self.macd_signal(macd_df)
 
+        prev_close = df["close"].iloc[-2] if len(df) >= 2 else current_price
+        day_return = (current_price - prev_close) / prev_close if prev_close > 0 else 0.0
+
         bb_df = self.calc_bollinger(df)
-        bb_sig = self.bollinger_signal(bb_df, current_price)
+        bb_sig = self.bollinger_signal(bb_df, current_price, day_return)
 
         ma_df = self.calc_moving_averages(df)
         ma_sig = self.ma_signal(ma_df, current_price)
@@ -332,5 +345,6 @@ class TechnicalIndicators:
                 "ma60": round(ma60, 0),
                 "volume_ratio": vol_result["volume_ratio"],
                 "current_price": current_price,
+                "day_return": round(day_return, 4),
             },
         }

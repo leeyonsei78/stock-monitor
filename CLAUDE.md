@@ -147,7 +147,7 @@ trading:
 ### `config/strategy.yaml` — 매매 신호 기준
 ```yaml
 buy_conditions:
-  min_signal_score: 0.35     # 매수 최소 점수 (2026-08-14: 0.40→0.35 — RSI 50-60 중립화 연동 완화)
+  min_signal_score: 0.30     # 매수 최소 점수 (2026-08-20: 0.35→0.30 — 최고점수 0.29로 매수 구조적 불가 확인)
   rsi_max: 60                # RSI 상한 (2026-08-06 55→60으로 완화)
   volume_min_ratio: 1.3      # 거래량 배율 조건
   foreign_net_buy: false     # 외국인 순매수 필수 조건 해제 (2026-08-18: AND 조건 완화)

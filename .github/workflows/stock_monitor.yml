@@ -23,18 +23,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 패키지 캐시 복원
-        id: venv-cache
+      - name: pip 캐시 (패키지 다운로드만 캐싱 — venv 심볼릭 링크 파손 방지)
         uses: actions/cache@v4
         with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
 
-      - name: 패키지 설치 (캐시 미스 시에만)
-        if: steps.venv-cache.outputs.cache-hit != 'true'
+      - name: 패키지 설치
         run: |
           python -m venv .venv
-          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
 
       - name: 주식 모니터 실행
         env:

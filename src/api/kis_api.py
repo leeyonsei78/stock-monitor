@@ -388,16 +388,20 @@ class KISApi:
 
     # ── 종목 스크리닝 ────────────────────────────────────────────
     def get_top_volume_stocks(self, market: str = "J", limit: int = 50) -> list[dict]:
-        """거래량 상위 종목 조회"""
+        """거래량 상위 종목 조회.
+        FHPST01710000은 FID_COND_MRKT_DIV_CODE="J"만 지원.
+        시장 구분은 FID_BLNG_CLS_CODE로: "1"=코스피, "2"=코스닥, "0"=전체
+        """
+        blng_cls = {"J": "1", "Q": "2"}.get(market, "0")
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/volume-rank",
             "FHPST01710000",
             {
-                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_COND_SCR_DIV_CODE": "20171",
                 "FID_INPUT_ISCD": "0000",
                 "FID_DIV_CLS_CODE": "0",
-                "FID_BLNG_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": blng_cls,
                 "FID_TRGT_CLS_CODE": "111111111",
                 "FID_TRGT_EXLS_CLS_CODE": "000000",
                 "FID_INPUT_PRICE_1": "",

@@ -67,33 +67,34 @@ except Exception as e:
     add_section("1) inquire-investor 오류", str(e))
 
 
-# ── 2. 거래량 상위 KOSPI ────────────────────────────────────────
-try:
-    raw = api._get(
-        "/uapi/domestic-stock/v1/quotations/volume-rank",
-        "FHPST01710000",
-        {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_COND_SCR_DIV_CODE": "20171",
-            "FID_INPUT_ISCD": "0000",
-            "FID_DIV_CLS_CODE": "0",
-            "FID_BLNG_CLS_CODE": "0",
-            "FID_TRGT_CLS_CODE": "111111111",
-            "FID_TRGT_EXLS_CLS_CODE": "000000",
-            "FID_INPUT_PRICE_1": "",
-            "FID_INPUT_PRICE_2": "",
-            "FID_VOL_CNT": "",
-            "FID_INPUT_DATE_1": "",
-        },
-        base=api._quote_url,
-    )
-    out = raw.get("output", [])
-    info = f"총 반환 행수: {len(out)}\n"
-    for i, row in enumerate(out[:20]):
-        info += f"{i+1:2d}. [{row.get('mksc_shrn_iscd','')}] {row.get('hts_kor_isnm','')}\n"
-    add_section("2) volume-rank KOSPI — 상위 20개", info)
-except Exception as e:
-    add_section("2) volume-rank 오류", str(e))
+# ── 2. 거래량 상위 KOSPI (FID_BLNG_CLS_CODE="1") ────────────────
+for label, blng_cls in [("KOSPI (FID_BLNG_CLS_CODE=1)", "1"), ("KOSDAQ (FID_BLNG_CLS_CODE=2)", "2")]:
+    try:
+        raw = api._get(
+            "/uapi/domestic-stock/v1/quotations/volume-rank",
+            "FHPST01710000",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": blng_cls,
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "000000",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_INPUT_DATE_1": "",
+            },
+            base=api._quote_url,
+        )
+        out = raw.get("output", [])
+        info = f"총 반환 행수: {len(out)}\n"
+        for i, row in enumerate(out[:10]):
+            info += f"{i+1:2d}. [{row.get('mksc_shrn_iscd','')}] {row.get('hts_kor_isnm','')}\n"
+        add_section(f"2) volume-rank {label} — 상위 10개", info)
+    except Exception as e:
+        add_section(f"2) volume-rank {label} 오류", str(e))
 
 
 # ── 슬랙 전송 (WebClient 직접 사용 — 오류 즉시 출력) ────────────

@@ -1,10 +1,7 @@
-name: KIS API 진단 (장중 1회)
+name: KIS API 진단 (수동 실행)
 
 on:
-  schedule:
-    # 매일 10:00 KST (= UTC 01:00), 평일만
-    - cron: '0 1 * * 1-5'
-  workflow_dispatch:  # 수동 실행 버튼 (장중 아무때나 직접 실행 가능)
+  workflow_dispatch:  # 수동 실행만 — 버그 파악 완료 후 schedule 제거 (2026-08-20)
 
 jobs:
   debug:
@@ -20,18 +17,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 패키지 캐시 복원
-        id: venv-cache
+      - name: pip 캐시
         uses: actions/cache@v4
         with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
 
-      - name: 패키지 설치 (캐시 미스 시에만)
-        if: steps.venv-cache.outputs.cache-hit != 'true'
+      - name: 패키지 설치
         run: |
           python -m venv .venv
-          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
 
       - name: KIS API 원시 응답 진단
         env:

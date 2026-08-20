@@ -510,24 +510,22 @@ class RealtimeMonitor:
             stocks.append({"ticker": ticker, "name": "", "market": market})
 
         watchlist_tickers = {s["ticker"] for s in stocks}
-        half = self._scan_top_n // 2
-        # 시장별 독립 에러 처리: 코스피 실패해도 코스닥은 계속 시도
-        # API는 최대 50개 요청 → watchlist·ETF 필터링 후 목표 n개 확보
-        for market, n in (("J", half), ("Q", self._scan_top_n - half)):
-            try:
-                added = 0
-                for s in self._api.get_top_volume_stocks(market=market, limit=50):
-                    if added >= n:
-                        break
-                    if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
-                        if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
-                            continue
-                        stocks.append({"ticker": s["ticker"], "name": s["name"], "market": market})
-                        watchlist_tickers.add(s["ticker"])
-                        added += 1
-                logger.info(f"거래량 상위 조회 완료 [{market}]: {added}개 추가 (목표 {n}개)")
-            except Exception as e:
-                logger.error(f"거래량 상위 조회 실패 [{market}]: {e}")
+        # FID_BLNG_CLS_CODE "1"/"2"는 시장 구분이 아닌 종목등급 코드라 KOSPI/KOSDAQ 분리 불가 (2026-08-20 확인)
+        # 전체(=0) 한 번 조회 후 ETF 키워드 + isdigit 필터링으로 scan_top_n개 확보
+        try:
+            added = 0
+            for s in self._api.get_top_volume_stocks(market="J", limit=100):
+                if added >= self._scan_top_n:
+                    break
+                if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
+                    if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
+                        continue
+                    stocks.append({"ticker": s["ticker"], "name": s["name"], "market": "J"})
+                    watchlist_tickers.add(s["ticker"])
+                    added += 1
+            logger.info(f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개)")
+        except Exception as e:
+            logger.error(f"거래량 상위 조회 실패: {e}")
 
         total      = len(stocks)
         buy_count  = 0

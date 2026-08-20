@@ -67,6 +67,9 @@ class RealtimeMonitor:
         self._signal   = SignalGenerator()
         self._notifier = SlackNotifier()
 
+        # watchlist 종목별 시장 코드 (기본값 "J"=코스피, 코스닥은 "Q")
+        self._watchlist_markets: dict[str, str] = monitor_cfg.get("watchlist_markets", {})
+
         # in-memory 쿨다운 (Supabase 미사용 시)
         self._last_alert: dict[str, tuple[str, datetime]] = {}
         self._running = False
@@ -503,7 +506,8 @@ class RealtimeMonitor:
         stocks: list[dict] = []
 
         for ticker in self._watchlist:
-            stocks.append({"ticker": ticker, "name": "", "market": "J"})
+            market = self._watchlist_markets.get(ticker, "J")
+            stocks.append({"ticker": ticker, "name": "", "market": market})
 
         watchlist_tickers = {s["ticker"] for s in stocks}
         half = self._scan_top_n // 2

@@ -105,6 +105,25 @@ class SupabaseSignalStore:
             logger.error(f"신호 평가 대상 조회 실패: {e}")
             return []
 
+    def get_evaluated_signals(self, since_iso: str) -> list[dict]:
+        """1일차 평가가 완료된 신호 전체 조회 (주간 추이 리포트용)"""
+        try:
+            result = (
+                self._client.table("stock_signal_log")
+                .select(
+                    "id, ticker, signal_type, score, current_price, alerted_at, "
+                    "return_1d_pct, return_3d_pct, expected_return_pct"
+                )
+                .not_.is_("return_1d_pct", "null")
+                .gte("alerted_at", since_iso)
+                .order("alerted_at")
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"신호 평가 완료 목록 조회 실패: {e}")
+            return []
+
     def update_signal_evaluation(self, row_id: int, fields: dict):
         try:
             self._client.table("stock_signal_log").update(fields).eq("id", row_id).execute()

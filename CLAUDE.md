@@ -311,6 +311,9 @@ git push origin main
 - **예상 변동률 정확도 추적 (2026-08-21 추가)**: `stock_signal_log.expected_return_pct` 컬럼에 신호 발생 시점의 ATR×신호강도 경험적 추정치 저장 (`save_signal()` 파라미터 추가)
   - `evaluate_signals.py`가 1일/3일 실제 수익률과 비교해 방향적중 건수 + 평균오차(MAE) 계산 → Slack 요약에 "🔮 예상변동률 정확도" 줄로 표시
   - 데이터가 쌓여 MAE가 안정적으로 낮아지면 회귀모델 기반 예측으로 교체 판단 근거로 사용
+- **주간 정확도 추이 리포트 (2026-08-21 추가)**: `weekly_accuracy_report.py` — 1일차 평가 완료된 신호 전체를 월~일 주 단위로 묶어 매수/매도 적중률·예상변동률 MAE의 주차별 추이 + 누적 요약을 Slack으로 전송
+  - 워크플로우: `.github/workflows/weekly_accuracy_report.yml` — 매주 금요일 18:30 KST (evaluate_signals.yml 18:10 실행 이후) 자동 실행, `workflow_dispatch`로 수동 실행 가능
+  - 평가 완료 신호가 5건 미만이면 "데이터 수집 중" 메시지만 전송 (Claude 클라우드 라우틴 대신 GitHub Actions 사용 — 클라우드 라우틴은 이 저장소의 Supabase/Slack Secrets에 접근 불가)
 
 ---
 

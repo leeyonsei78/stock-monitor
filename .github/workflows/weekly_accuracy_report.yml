@@ -1,0 +1,41 @@
+name: 주간 신호 정확도 리포트
+
+on:
+  schedule:
+    # 매주 금요일 18:30 KST = UTC 09:30 (evaluate_signals.yml 18:10 실행 이후)
+    - cron: '30 9 * * 5'
+  workflow_dispatch:  # 수동 실행 버튼
+
+jobs:
+  weekly-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: pip 캐시 (패키지 다운로드만 캐싱 — venv 심볼릭 링크 파손 방지)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - name: 패키지 설치
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
+
+      - name: 주간 정확도 리포트
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: .venv/bin/python weekly_accuracy_report.py

@@ -68,7 +68,9 @@ class RealtimeMonitor:
         self._notifier = SlackNotifier()
 
         # watchlist 종목별 시장 코드 (기본값 "J"=코스피, 코스닥은 "Q")
-        self._watchlist_markets: dict[str, str] = monitor_cfg.get("watchlist_markets", {})
+        # config.yaml에 키만 있고 값이 비어있으면 YAML이 None으로 파싱해 .get()의 기본값이
+        # 적용되지 않음 (키는 존재하므로) → or {}로 방어 (2026-08-21)
+        self._watchlist_markets: dict[str, str] = monitor_cfg.get("watchlist_markets") or {}
 
         # in-memory 쿨다운 (Supabase 미사용 시)
         self._last_alert: dict[str, tuple[str, datetime]] = {}

@@ -34,6 +34,8 @@ class TradeSignal:
     investor_score: float = 0.0
     stop_loss_pct: float = 0.0     # ATR 기반 동적 손절 % (음수) — 자동매매 포지션 리스크 관리용
     take_profit_pct: float = 0.0   # ATR 기반 동적 목표 % (양수)
+    expected_return_pct: float = 0.0   # 예상 변동률(경험적 추정, 방향 포함) — Slack 표시용
+    expected_return_basis: str = ""    # 위 추정치의 산출 근거 설명
     indicators: dict = field(default_factory=dict)
     investor_detail: dict = field(default_factory=dict)
 
@@ -61,6 +63,9 @@ class TradeSignal:
             f"*투자자 동향 (점수: {self.investor_score:+.3f})*",
             f"• {inv.get('current', {}).get('summary', '-')}",
             f"• {inv.get('history', {}).get('trend', '-')}",
+            f"",
+            f"*예상 변동률:* {self.expected_return_pct:+.1f}%",
+            f"_({self.expected_return_basis})_",
             f"",
             f"*판단 근거:* {self.reason}",
         ]
@@ -136,6 +141,9 @@ class SignalGenerator:
             recommended_qty = int(budget / current_price) if current_price > 0 else 0
 
         stop_loss_pct, take_profit_pct = self._calc_dynamic_risk(ind.get("atr_pct"))
+        expected_return_pct, expected_return_basis = self._calc_expected_return(
+            ind.get("atr_pct"), final_score
+        )
 
         sig = TradeSignal(
             ticker=ticker,
@@ -149,6 +157,8 @@ class SignalGenerator:
             investor_score=round(inv_raw, 4),
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
+            expected_return_pct=expected_return_pct,
+            expected_return_basis=expected_return_basis,
             indicators=ind,
             investor_detail=inv_result,
         )
@@ -173,6 +183,26 @@ class SignalGenerator:
         take_profit_pct = max(cfg["take_profit_min_pct"], min(cfg["take_profit_max_pct"], take_profit_pct))
 
         return round(stop_loss_pct, 2), round(take_profit_pct, 2)
+
+    def _calc_expected_return(self, atr_pct: Optional[float], score: float) -> tuple[float, str]:
+        """예상 변동률(경험적 추정) 산출 — 통계 검증된 예측이 아니라 참고용 어림값.
+        방향은 신호점수 부호, 크기는 최근 14일 변동성(ATR)에 신호강도(|점수|)를 곱해 결정.
+        신호가 강할수록(0.75=강한매수/매도 기준) ATR의 최대 1.5배, 약할수록 최소 0.5배로 스케일.
+        실제 신호-결과 데이터(evaluate_signals.py)가 쌓이면 회귀모델 기반으로 교체 예정 (2026-08-21 추가)"""
+        cfg = self._cfg["prediction"]
+        if not atr_pct or atr_pct <= 0:
+            atr_pct = 2.0  # 데이터 부족 시 보수적 기본값
+
+        confidence = min(1.0, abs(score) / cfg["confidence_score_ref"])
+        multiplier = cfg["multiplier_min"] + (cfg["multiplier_max"] - cfg["multiplier_min"]) * confidence
+        direction = 1 if score >= 0 else -1
+        expected_pct = direction * atr_pct * multiplier
+
+        basis = (
+            f"최근 14일 변동성(ATR) {atr_pct:.1f}%에 신호강도(점수 {score:+.2f}, "
+            f"신뢰도 {confidence*100:.0f}%)를 반영한 경험적 추정 — 실제 결과 데이터 검증 전 참고치"
+        )
+        return round(expected_pct, 2), basis
 
     def _classify_signal(
         self,

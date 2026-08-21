@@ -383,6 +383,12 @@ class RealtimeMonitor:
                 f"{op}"
             )
 
+        # ── 예상 변동률 (경험적 추정, 실측 데이터 검증 전 참고치) ──
+        prediction_block = (
+            f"🔮 *예상 변동률: {signal.expected_return_pct:+.1f}%*\n"
+            f"_{signal.expected_return_basis}_"
+        )
+
         # ── 판단 근거 (상세 설명) ──
         bullets = self._build_reason_bullets(signal, investor_current, investor_history)
         bullet_lines = "\n".join(f"• {b}" for b in bullets) if bullets else ""
@@ -406,7 +412,7 @@ class RealtimeMonitor:
         blocks = [header, sep, vol_block, "", investor_block, "", tech_block]
         if momentum_block:
             blocks += ["", momentum_block]
-        blocks += ["", reason_block, "", rec_block, sep, f"⏰ _{now_str}_"]
+        blocks += ["", prediction_block, "", reason_block, "", rec_block, sep, f"⏰ _{now_str}_"]
         return "\n".join(blocks)
 
     # ── 단일 종목 분석 ────────────────────────────────────────────

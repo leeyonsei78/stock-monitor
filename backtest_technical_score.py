@@ -14,11 +14,16 @@ KIS 투자자 수급 API(inquire-investor)는 항상 "최근 30거래일"만 반
 import os
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import FinanceDataReader as fdr
 import pandas as pd
+from dotenv import load_dotenv
 
+load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.analysis.technical_indicators import TechnicalIndicators
+
+KST = ZoneInfo("Asia/Seoul")
 
 UNIVERSE = [
     ("005930", "삼성전자"), ("000660", "SK하이닉스"), ("042700", "한미반도체"),
@@ -34,10 +39,9 @@ UNIVERSE = [
     ("012450", "한화에어로스페이스"), ("034220", "LG디스플레이"),
 ]
 
-# TODO(2026-08-21): 최근 6개월(BACKTEST_CALENDAR_DAYS=200)은 전반적 상승장이라
-# 전 분위구간이 평균 양(+)의 수익률을 보여 점수 변별력이 희석됐을 가능성이 있음.
-# 하락장·횡보장이 포함된 더 긴 기간(1~2년)으로 재실행해 재검증 필요.
-BACKTEST_CALENDAR_DAYS = 200   # 실제 백테스트 기간 (거래일 기준 약 6개월)
+# 2026-08-21: 최초 6개월(200일) 백테스트는 상승장 구간에 치우쳐 재검증 필요 판정 →
+# 하락장·횡보장을 포함하도록 2년으로 확장
+BACKTEST_CALENDAR_DAYS = 730   # 실제 백테스트 기간 (거래일 기준 약 2년)
 WARMUP_CALENDAR_DAYS = 130     # 지표 계산용 선행 데이터 (거래일 60일+여유)
 MIN_HISTORY = 65               # 지표 계산에 필요한 최소 과거 행수
 
@@ -107,37 +111,70 @@ def main():
             if len(fwd) < 3:
                 continue
 
+            sig = result.get("signals", {})
             rows.append({
                 "ticker": code, "name": name, "date": date_i, "score": score, **fwd,
+                **{f"sig_{k}": v for k, v in sig.items()},
             })
             added += 1
         print(f"  [완료] {name}({code}): {added}건")
 
     df = pd.DataFrame(rows)
-    print(f"\n=== 총 샘플: {len(df)}건 ({df['ticker'].nunique() if len(df) else 0}개 종목) ===\n")
+    now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
+    lines = [f"📐 *분기별 기술점수 백테스트* — {now_str}"]
+    lines.append(f"샘플: {len(df)}건 ({df['ticker'].nunique() if len(df) else 0}개 종목, 최근 {BACKTEST_CALENDAR_DAYS}일)")
+
     if df.empty:
-        print("샘플 없음 — 데이터 확인 필요")
+        lines.append("샘플 없음 — 데이터 확인 필요")
+        _send("\n".join(lines))
         return
 
-    print("--- 기술점수 vs 향후 수익률 상관계수 ---")
-    for h in ["fwd_1d", "fwd_3d", "fwd_5d"]:
+    lines.append("\n*종합점수 vs 향후 수익률 상관계수*")
+    for h, label in [("fwd_1d", "1일"), ("fwd_3d", "3일"), ("fwd_5d", "5일")]:
         corr = df["score"].corr(df[h])
-        print(f"  {h}: {corr:+.4f}")
+        lines.append(f"  {label}: {corr:+.4f}")
 
-    print("\n--- 점수 5분위별 평균 향후 수익률 (Q1=최저점수 ~ Q5=최고점수) ---")
-    df["quintile"] = pd.qcut(df["score"], 5, labels=["Q1", "Q2", "Q3", "Q4", "Q5"], duplicates="drop")
-    summary = df.groupby("quintile", observed=True)[["fwd_1d", "fwd_3d", "fwd_5d"]].agg(["mean", "count"])
-    print(summary)
-
-    print("\n--- 현재 매수 임계값(0.30 종합점수 기준 참고용 — 기술점수만으로는 직접 비교 불가) 상위 구간 vs 하위 구간 ---")
     top = df[df["score"] >= df["score"].quantile(0.8)]
     bottom = df[df["score"] <= df["score"].quantile(0.2)]
-    print(f"상위 20% (n={len(top)}): 1일 평균 {top['fwd_1d'].mean():+.2f}% | 3일 평균 {top['fwd_3d'].mean():+.2f}% | 5일 평균 {top['fwd_5d'].mean():+.2f}%")
-    print(f"하위 20% (n={len(bottom)}): 1일 평균 {bottom['fwd_1d'].mean():+.2f}% | 3일 평균 {bottom['fwd_3d'].mean():+.2f}% | 5일 평균 {bottom['fwd_5d'].mean():+.2f}%")
+    lines.append(
+        f"\n종합점수 상위20% 5일평균 {top['fwd_5d'].mean():+.2f}% "
+        f"vs 하위20% {bottom['fwd_5d'].mean():+.2f}%"
+    )
+
+    # ── 개별 지표별 예측력 분해 ──────────────────────────────────
+    sig_cols = [c for c in df.columns if c.startswith("sig_")]
+    lines.append("\n*개별 지표별 상관계수(3일)/스프레드* — 참고용, 가중치는 사람이 검토 후 수동 반영")
+    for col in sig_cols:
+        name_kr = col.replace("sig_", "")
+        corr3 = df[col].corr(df["fwd_3d"])
+        top_g = df[df[col] >= df[col].quantile(0.8)]
+        bot_g = df[df[col] <= df[col].quantile(0.2)]
+        spread3 = top_g["fwd_3d"].mean() - bot_g["fwd_3d"].mean()
+        lines.append(f"  {name_kr}: corr {corr3:+.4f}, 상하위20% 스프레드 {spread3:+.3f}%p")
+
+    lines.append("\n_이 리포트는 통계치만 산출합니다 — signal_weights 변경은 자동 반영되지 않으며 검토 후 수동으로 적용합니다._")
+
+    msg = "\n".join(lines)
+    print(msg)
 
     out_path = "backtest_result.csv"
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"\n상세 결과 저장: {out_path}")
+
+    _send(msg)
+
+
+def _send(msg: str):
+    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_channel = os.getenv("SLACK_CHANNEL_ID")
+    if not (slack_token and slack_channel):
+        print("SLACK_BOT_TOKEN / SLACK_CHANNEL_ID 미설정 — 슬랙 전송 스킵")
+        return
+    try:
+        from slack_sdk import WebClient
+        WebClient(token=slack_token).chat_postMessage(channel=slack_channel, text=msg)
+    except Exception as e:
+        print(f"슬랙 전송 실패: {e}")
 
 
 if __name__ == "__main__":

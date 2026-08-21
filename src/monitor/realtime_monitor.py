@@ -76,6 +76,9 @@ class RealtimeMonitor:
         self._last_alert: dict[str, tuple[str, datetime]] = {}
         self._running = False
 
+        # 지수 대비 상대강도용 벤치마크 데이터 — _scan_once()에서 스캔당 1회 갱신
+        self._index_ohlcv: Optional[list[dict]] = None
+
     # ── 시장 시간 판단 ────────────────────────────────────────────
     @staticmethod
     def _is_market_open() -> bool:
@@ -127,8 +130,9 @@ class RealtimeMonitor:
                 budget = int(budget * 1.5)
             qty = max(1, int(budget / price))
             buy_price  = price
-            target     = int(price * 1.05)   # +5% 목표가
-            stop_loss  = int(price * 0.97)   # -3% 손절가
+            # ATR(변동성) 기반 동적 목표/손절 — 종목별 고정 +5%/-3% 대신 signal.take_profit_pct/stop_loss_pct 사용 (2026-08-21)
+            target     = int(price * (1 + signal.take_profit_pct / 100))
+            stop_loss  = int(price * (1 + signal.stop_loss_pct / 100))
             return {
                 "action":     "매수",
                 "buy_price":  buy_price,
@@ -136,6 +140,8 @@ class RealtimeMonitor:
                 "qty":        qty,
                 "target":     target,
                 "stop_loss":  stop_loss,
+                "target_pct":    signal.take_profit_pct,
+                "stop_loss_pct": signal.stop_loss_pct,
             }
         else:
             return {
@@ -386,7 +392,10 @@ class RealtimeMonitor:
         rec_lines = [f"💡 *추천 액션*"]
         if rec.get("action") == "매수":
             rec_lines.append(f"• 매수가: *{rec['buy_price']:,}원* (지정가)  |  수량: *{rec['qty']:,}주*")
-            rec_lines.append(f"• 목표가: *{rec['target']:,}원* (+5%)  |  손절가: *{rec['stop_loss']:,}원* (-3%)")
+            rec_lines.append(
+                f"• 목표가: *{rec['target']:,}원* ({rec['target_pct']:+.1f}%)  |  "
+                f"손절가: *{rec['stop_loss']:,}원* ({rec['stop_loss_pct']:+.1f}%)  |  _ATR 변동성 기반_"
+            )
         else:
             rec_lines.append(f"• 기준가: *{rec['sell_price']:,}원*")
             rec_lines.append(f"• 보유 중이면 매도 고려  |  미보유 시 신규 매수 금지")
@@ -436,6 +445,7 @@ class RealtimeMonitor:
                 investor_current=investor_current,
                 investor_history=investor_hist,
                 realtime_price=current_info.get("price", 0),
+                index_ohlcv=self._index_ohlcv,
             )
         except Exception as e:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
@@ -504,6 +514,14 @@ class RealtimeMonitor:
     def _scan_once(self):
         logger.info("=== 종목 스캔 시작 ===")
         scan_start = time.time()
+
+        # 지수 대비 상대강도 계산용 — 스캔 1회당 1번만 조회 (종목마다 재조회하지 않음)
+        # 코스피/코스닥 구분 없이 전 종목에 KS11 사용 (거래량 상위 결과에서 시장 구분 불가, 2026-08-20 확인 사항과 동일한 제약)
+        try:
+            self._index_ohlcv = self._api.get_daily_ohlcv("KS11", period=30)
+        except Exception as e:
+            logger.warning(f"코스피 지수 데이터 조회 실패 — 상대강도 신호 비활성화: {e}")
+            self._index_ohlcv = None
 
         stocks: list[dict] = []
 

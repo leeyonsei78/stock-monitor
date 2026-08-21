@@ -18,6 +18,9 @@ class Position:
     quantity: int
     avg_price: float
     highest_price: float = 0.0      # 트레일링 스탑용 최고가
+    # 매수 시점 ATR 기반 동적 손절/익절 % (SignalGenerator가 산출) — 미지정 시 config.yaml 고정값 사용
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
 
     @property
     def cost(self) -> float:
@@ -46,7 +49,23 @@ class Portfolio:
         self._total_budget = self._trade_cfg["total_budget"]
 
     # ── 포지션 관리 ──────────────────────────────────────────────
-    def add_position(self, ticker: str, name: str, quantity: int, price: float):
+    def add_position(
+        self,
+        ticker: str,
+        name: str,
+        quantity: int,
+        price: float,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+    ):
+        """stop_loss_pct/take_profit_pct 미지정 시 config.yaml risk 고정값으로 대체
+        (TradeSignal.stop_loss_pct/take_profit_pct — ATR 기반 동적값 — 을 그대로 전달하면
+        매수 시점 변동성 기준으로 종목별 리스크가 고정됨, 자동매매 확장용 2026-08-21 추가)"""
+        if stop_loss_pct is None:
+            stop_loss_pct = self._risk_cfg["stop_loss_pct"]
+        if take_profit_pct is None:
+            take_profit_pct = self._risk_cfg["take_profit_pct"]
+
         if ticker in self._positions:
             pos = self._positions[ticker]
             total_cost = pos.avg_price * pos.quantity + price * quantity
@@ -57,6 +76,7 @@ class Portfolio:
             self._positions[ticker] = Position(
                 ticker=ticker, name=name, quantity=quantity, avg_price=price,
                 highest_price=price,
+                stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
             )
         logger.info(f"포지션 추가: {ticker} {quantity}주 @ {price:,}원")
 
@@ -93,8 +113,9 @@ class Portfolio:
         if not pos:
             return False
         pnl_pct = pos.unrealized_pnl_pct(current_price)
-        if pnl_pct <= self._risk_cfg["stop_loss_pct"]:
-            logger.warning(f"손절 조건: {ticker} {pnl_pct:.2f}% (기준: {self._risk_cfg['stop_loss_pct']}%)")
+        threshold = pos.stop_loss_pct if pos.stop_loss_pct is not None else self._risk_cfg["stop_loss_pct"]
+        if pnl_pct <= threshold:
+            logger.warning(f"손절 조건: {ticker} {pnl_pct:.2f}% (기준: {threshold}%)")
             return True
         return False
 
@@ -104,8 +125,9 @@ class Portfolio:
         if not pos:
             return False
         pnl_pct = pos.unrealized_pnl_pct(current_price)
-        if pnl_pct >= self._risk_cfg["take_profit_pct"]:
-            logger.info(f"익절 조건: {ticker} {pnl_pct:.2f}% (기준: {self._risk_cfg['take_profit_pct']}%)")
+        threshold = pos.take_profit_pct if pos.take_profit_pct is not None else self._risk_cfg["take_profit_pct"]
+        if pnl_pct >= threshold:
+            logger.info(f"익절 조건: {ticker} {pnl_pct:.2f}% (기준: {threshold}%)")
             return True
         return False
 

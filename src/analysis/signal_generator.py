@@ -32,6 +32,8 @@ class TradeSignal:
     reason: str = ""
     tech_score: float = 0.0
     investor_score: float = 0.0
+    stop_loss_pct: float = 0.0     # ATR 기반 동적 손절 % (음수) — 자동매매 포지션 리스크 관리용
+    take_profit_pct: float = 0.0   # ATR 기반 동적 목표 % (양수)
     indicators: dict = field(default_factory=dict)
     investor_detail: dict = field(default_factory=dict)
 
@@ -64,6 +66,12 @@ class TradeSignal:
         ]
         if self.recommended_qty > 0:
             lines.append(f"*추천 수량:* {self.recommended_qty:,}주")
+            target = int(self.current_price * (1 + self.take_profit_pct / 100))
+            stop = int(self.current_price * (1 + self.stop_loss_pct / 100))
+            lines.append(
+                f"*목표가:* {target:,}원 ({self.take_profit_pct:+.1f}%)  |  "
+                f"*손절가:* {stop:,}원 ({self.stop_loss_pct:+.1f}%)"
+            )
         return "\n".join(lines)
 
 
@@ -72,7 +80,9 @@ class SignalGenerator:
         with open("config/strategy.yaml", "r", encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)
         with open("config/config.yaml", "r", encoding="utf-8") as f:
-            self._trade_cfg = yaml.safe_load(f)["trading"]
+            config_yaml = yaml.safe_load(f)
+        self._trade_cfg = config_yaml["trading"]
+        self._risk_cfg = config_yaml["risk"]
 
         self._tech = TechnicalIndicators()
         self._investor = InvestorAnalyzer()
@@ -88,9 +98,16 @@ class SignalGenerator:
         holding_qty: int = 0,
         avg_price: float = 0,
         realtime_price: int = 0,
+        index_ohlcv: Optional[list[dict]] = None,
+        position_stop_loss_pct: Optional[float] = None,
+        position_take_profit_pct: Optional[float] = None,
     ) -> TradeSignal:
-        """종합 매매 신호 생성"""
-        tech_result = self._tech.get_technical_score(ohlcv)
+        """종합 매매 신호 생성
+        index_ohlcv: 벤치마크 지수 일봉 (상대강도 신호용, 선택)
+        position_stop_loss_pct/position_take_profit_pct: 보유 중 종목의 매수 시점 ATR 기준
+        (Position.stop_loss_pct/take_profit_pct) — 없으면 config.yaml risk 고정값 사용
+        """
+        tech_result = self._tech.get_technical_score(ohlcv, index_ohlcv)
         inv_result = self._investor.get_investor_score(investor_current, investor_history)
 
         tech_raw = tech_result["score"]
@@ -107,7 +124,8 @@ class SignalGenerator:
         ind["current_price"] = current_price  # Slack 메시지에도 반영
 
         signal_type, reason = self._classify_signal(
-            final_score, tech_result, inv_result, holding_qty, avg_price, current_price
+            final_score, tech_result, inv_result, holding_qty, avg_price, current_price,
+            position_stop_loss_pct, position_take_profit_pct,
         )
 
         recommended_qty = 0
@@ -116,6 +134,8 @@ class SignalGenerator:
             if signal_type == SignalType.STRONG_BUY:
                 budget = int(budget * 1.5)
             recommended_qty = int(budget / current_price) if current_price > 0 else 0
+
+        stop_loss_pct, take_profit_pct = self._calc_dynamic_risk(ind.get("atr_pct"))
 
         sig = TradeSignal(
             ticker=ticker,
@@ -127,6 +147,8 @@ class SignalGenerator:
             reason=reason,
             tech_score=round(tech_raw, 4),
             investor_score=round(inv_raw, 4),
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
             indicators=ind,
             investor_detail=inv_result,
         )
@@ -136,6 +158,22 @@ class SignalGenerator:
         )
         return sig
 
+    def _calc_dynamic_risk(self, atr_pct: Optional[float]) -> tuple[float, float]:
+        """ATR(변동성) 기반 손절/목표 % 산출. 종목마다 변동성이 다른데 고정 -3%/+5%를
+        일괄 적용하면 저변동 종목엔 너무 넓고 고변동 종목(급등주 등)엔 너무 좁음.
+        자동매매 확장 시 Position에 그대로 저장해 재사용 (2026-08-21 추가)"""
+        cfg = self._risk_cfg
+        if not atr_pct or atr_pct <= 0:
+            return cfg["stop_loss_pct"], cfg["take_profit_pct"]
+
+        stop_loss_pct = -atr_pct * cfg["atr_stop_multiplier"]
+        stop_loss_pct = max(cfg["stop_loss_min_pct"], min(cfg["stop_loss_max_pct"], stop_loss_pct))
+
+        take_profit_pct = atr_pct * cfg["atr_target_multiplier"]
+        take_profit_pct = max(cfg["take_profit_min_pct"], min(cfg["take_profit_max_pct"], take_profit_pct))
+
+        return round(stop_loss_pct, 2), round(take_profit_pct, 2)
+
     def _classify_signal(
         self,
         score: float,
@@ -144,21 +182,25 @@ class SignalGenerator:
         holding_qty: int,
         avg_price: float,
         current_price: int,
+        position_stop_loss_pct: Optional[float] = None,
+        position_take_profit_pct: Optional[float] = None,
     ) -> tuple[SignalType, str]:
         buy_cfg = self._cfg["buy_conditions"]
         sell_cfg = self._cfg["sell_conditions"]
-        risk_cfg = self._trade_cfg  # stop_loss/take_profit은 config.yaml risk에 있음
 
         reasons = []
 
         # 보유 중인 경우 손절/익절 우선 체크
+        # position_stop_loss_pct/take_profit_pct: 매수 시점 ATR로 산출된 종목별 동적 기준
+        # (자동매매에서 Position.stop_loss_pct/take_profit_pct 전달) — 없으면 config.yaml risk 고정값
         if holding_qty > 0 and avg_price > 0:
             change_pct = (current_price - avg_price) / avg_price * 100
-            # config.yaml의 risk 섹션을 읽어야 하지만 단순화
-            if change_pct <= -3.0:
-                return SignalType.STRONG_SELL, f"손절 기준 도달 ({change_pct:.1f}%)"
-            if change_pct >= 5.0:
-                return SignalType.SELL, f"익절 기준 도달 ({change_pct:.1f}%)"
+            stop_loss_pct = position_stop_loss_pct if position_stop_loss_pct is not None else self._risk_cfg["stop_loss_pct"]
+            take_profit_pct = position_take_profit_pct if position_take_profit_pct is not None else self._risk_cfg["take_profit_pct"]
+            if change_pct <= stop_loss_pct:
+                return SignalType.STRONG_SELL, f"손절 기준 도달 ({change_pct:.1f}%, 기준 {stop_loss_pct:.1f}%)"
+            if change_pct >= take_profit_pct:
+                return SignalType.SELL, f"익절 기준 도달 ({change_pct:.1f}%, 기준 {take_profit_pct:.1f}%)"
 
         ind = tech_result["indicators"]
         inv_current = inv_result["current"]

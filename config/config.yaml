@@ -34,11 +34,21 @@ schedule:
 # 리스크 관리
 # ==========================================
 risk:
-  stop_loss_pct: -3.0            # 손절 기준 (%)
-  take_profit_pct: 5.0           # 익절 기준 (%)
+  stop_loss_pct: -3.0            # 손절 기준 (%) — ATR 계산 불가 시 fallback
+  take_profit_pct: 5.0           # 익절 기준 (%) — ATR 계산 불가 시 fallback
   trailing_stop_pct: 2.0         # 트레일링 스탑 (%)
   max_daily_loss_pct: -5.0       # 일일 최대 손실 한도 (%)
   position_sizing: "fixed"       # "fixed" | "volatility" | "equal_weight"
+
+  # 종목별 변동성(ATR) 기반 동적 손절/목표가 (2026-08-21 추가)
+  # 손절% = -clamp(atr_pct * atr_stop_multiplier, stop_loss_min~max)
+  # 목표% =  clamp(atr_pct * atr_target_multiplier, take_profit_min~max)
+  atr_stop_multiplier: 1.5
+  atr_target_multiplier: 2.5
+  stop_loss_min_pct: -6.0
+  stop_loss_max_pct: -1.5
+  take_profit_min_pct: 3.0
+  take_profit_max_pct: 10.0
 
 # ==========================================
 # 실시간 모니터 설정

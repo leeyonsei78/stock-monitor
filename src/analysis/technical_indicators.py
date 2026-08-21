@@ -205,6 +205,34 @@ class TechnicalIndicators:
             "signal": signal,
         }
 
+    # ── ATR (변동성, 종목별 동적 손절/목표가 산출용) ──────────────
+    def calc_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        prev_close = df["close"].shift(1)
+        tr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        return tr.rolling(period).mean()
+
+    # ── 지수 대비 상대강도 (2026-08-21 추가) ───────────────────────
+    def relative_strength_signal(self, stock_return: float, index_return: float) -> float:
+        """5거래일 수익률을 지수와 비교해 종목 고유 강도를 측정 (-1~+1)
+        시장 전체가 오른 날 종목도 같이 오른 것인지, 시장을 이기고 있는지 구분
+        """
+        excess = stock_return - index_return
+        if excess >= 0.10:
+            return 1.0
+        elif excess >= 0.05:
+            return 0.6
+        elif excess >= 0.0:
+            return 0.2
+        elif excess >= -0.05:
+            return -0.2
+        elif excess >= -0.10:
+            return -0.6
+        return -1.0
+
     # ── 분봉 모멘텀 ─────────────────────────────────────────────
     def calc_minute_momentum(self, minute_candles: list[dict]) -> dict:
         """최근 분봉 기반 단기 모멘텀 분석 (API는 최신순 반환 → 역순 처리)"""
@@ -281,8 +309,10 @@ class TechnicalIndicators:
         }
 
     # ── 종합 기술적 점수 ─────────────────────────────────────────
-    def get_technical_score(self, ohlcv: list[dict]) -> dict:
-        """모든 지표를 종합한 기술적 분석 점수 반환"""
+    def get_technical_score(self, ohlcv: list[dict], index_ohlcv: Optional[list[dict]] = None) -> dict:
+        """모든 지표를 종합한 기술적 분석 점수 반환
+        index_ohlcv: 벤치마크 지수(KOSPI 등) 일봉 — 상대강도 계산용, 없으면 상대강도는 중립(0.0)
+        """
         if len(ohlcv) < 60:
             logger.warning(f"데이터 부족: {len(ohlcv)}개 (최소 60개 필요)")
             return {"score": 0.0, "signals": {}, "indicators": {}}
@@ -309,6 +339,23 @@ class TechnicalIndicators:
         vol_result = self.calc_volume_analysis(df)
         vol_sig = vol_result["signal"]
 
+        atr_series = self.calc_atr(df)
+        atr_val = atr_series.iloc[-1]
+        atr_pct = (atr_val / current_price * 100) if current_price > 0 and pd.notna(atr_val) else 2.0
+
+        stock_5d_return = 0.0
+        if len(df) > 5:
+            p0 = df["close"].iloc[-6]
+            stock_5d_return = (current_price - p0) / p0 if p0 > 0 else 0.0
+
+        rs_sig = 0.0
+        index_5d_return = None
+        if index_ohlcv and len(index_ohlcv) > 5:
+            idx_df = self.to_dataframe(index_ohlcv)
+            idx_p0, idx_p1 = idx_df["close"].iloc[-6], idx_df["close"].iloc[-1]
+            index_5d_return = (idx_p1 - idx_p0) / idx_p0 if idx_p0 > 0 else 0.0
+            rs_sig = self.relative_strength_signal(stock_5d_return, index_5d_return)
+
         weights = self._cfg["signal_weights"]
         tech_score = (
             rsi_sig * weights["rsi"]
@@ -316,6 +363,7 @@ class TechnicalIndicators:
             + bb_sig * weights["bollinger"]
             + ma_sig * weights["moving_average"]
             + vol_sig * weights["volume"]
+            + rs_sig * weights.get("relative_strength", 0.0)
         ) / (1 - weights["investor_sentiment"])  # 기술적 지표 비중 내에서 정규화
 
         cfg = self._cfg["indicators"]
@@ -331,6 +379,7 @@ class TechnicalIndicators:
                 "bollinger": round(bb_sig, 3),
                 "moving_average": round(ma_sig, 3),
                 "volume": round(vol_sig, 3),
+                "relative_strength": round(rs_sig, 3),
             },
             "indicators": {
                 "rsi": round(rsi_val, 2),
@@ -346,5 +395,8 @@ class TechnicalIndicators:
                 "volume_ratio": vol_result["volume_ratio"],
                 "current_price": current_price,
                 "day_return": round(day_return, 4),
+                "atr_pct": round(atr_pct, 3),
+                "stock_5d_return": round(stock_5d_return, 4),
+                "index_5d_return": round(index_5d_return, 4) if index_5d_return is not None else None,
             },
         }

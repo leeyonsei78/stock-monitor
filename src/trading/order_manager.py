@@ -44,6 +44,8 @@ class OrderManager:
         name: str,
         quantity: int,
         price: Optional[int] = None,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
     ) -> Optional[Order]:
         """
         매수 주문
@@ -81,7 +83,10 @@ class OrderManager:
             self._orders.append(order)
 
             if order.status == "FILLED":
-                self._portfolio.add_position(ticker, name, quantity, exec_price)
+                self._portfolio.add_position(
+                    ticker, name, quantity, exec_price,
+                    stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+                )
 
             price_str = "시장가" if price is None else f"{price:,}원"
             logger.info(f"매수 주문: {name}({ticker}) {quantity:,}주 @ {price_str} → 주문번호: {order.order_no}")

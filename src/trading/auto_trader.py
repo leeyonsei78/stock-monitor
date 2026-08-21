@@ -115,6 +115,13 @@ class AutoTrader:
             logger.error("일일 손실 한도 초과 - 매매 중단")
             return
 
+        # 지수 대비 상대강도용 — 스캔당 1회만 조회
+        try:
+            index_ohlcv = self._api.get_daily_ohlcv("KS11", period=30)
+        except Exception as e:
+            logger.warning(f"코스피 지수 데이터 조회 실패 — 상대강도 신호 비활성화: {e}")
+            index_ohlcv = None
+
         for stock in self._watchlist:
             ticker = stock["ticker"]
             name = stock["name"]
@@ -133,6 +140,9 @@ class AutoTrader:
                 signal = self._signal_gen.generate(
                     ticker, name, ohlcv, inv_current, inv_history,
                     holding_qty, avg_price,
+                    index_ohlcv=index_ohlcv,
+                    position_stop_loss_pct=pos.stop_loss_pct if pos else None,
+                    position_take_profit_pct=pos.take_profit_pct if pos else None,
                 )
 
                 # 매수 신호
@@ -142,6 +152,8 @@ class AutoTrader:
                             ticker, name,
                             quantity=signal.recommended_qty,
                             price=None,  # 시장가
+                            stop_loss_pct=signal.stop_loss_pct,
+                            take_profit_pct=signal.take_profit_pct,
                         )
                         if order:
                             await self._notifier.send(signal.to_slack_message())

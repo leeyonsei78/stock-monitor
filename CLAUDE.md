@@ -177,7 +177,7 @@ git push origin main
 - `-1.0 ~ +1.0` 범위
 - 기술적 지표 70% + 투자자 수급 30%
 - `+0.75` 이상 + 외국인 3일 연속 순매수 → 강한 매수
-- `+0.35` 이상 → 매수 (2026-08-14: 0.40→0.35 완화)
+- `+0.30` 이상 → 매수 (2026-08-14: 0.40→0.35, 2026-08-20: 0.35→0.30 완화)
 - `-0.50` 이하 → 매도
 - `-0.70` 이하 → 강한 매도
 - RSI 과매수(≥70) 매도 조건: **종합 점수 < 0 일 때만 발동** (수급 양호 급등주 오발화 방지, 2026-08-11)
@@ -187,6 +187,39 @@ git push origin main
 - **RSI 신호 공식 (2026-08-13 수정)**: oversold 경계(RSI=30)에서 신호가 0.0으로 떨어지고 RSI=31이 0.3이던 역전 버그 수정
   - 수정 전: `(oversold - rsi) / oversold` → RSI=30일 때 0.0, RSI=31일 때 0.3 (역전)
   - 수정 후: `0.3 + (oversold - rsi) / oversold * 0.7` → RSI=30 → 0.30, RSI=15 → 0.65, RSI=0 → 1.0 (연속적)
+- **급락 후 반등 오판 수정 (2026-08-21)**: 8/20 코스피 +5.89% 폭등일에 삼성전자(+9.5%)·SK하이닉스(+12.7%) 급반등에도 신호점수가 0.12~0.34에 그쳐 매수신호 0건이던 문제
+  - 볼린저: 당일 +3% 이상 급등 시 %b 상단권을 과매수 매도가 아닌 돌파 지속으로 해석
+  - 이평선: `현재가>ma5>ma20`이면 ma60 미회복(반등 초기)이어도 0.4→0.6
+  - 거래량: 기준선 20일 평균→중앙값 (급락 구간 이상 거래량이 평균 왜곡하는 문제 완화)
+  - 매수 거래량 조건: 배율 미달이어도 당일 +5% 이상 급등이면 예외 통과
+
+## 기술적 지표 가중치 (signal_weights, 2026-08-21 상대강도 추가로 재조정)
+| 지표 | 가중치 | 비고 |
+|---|---|---|
+| RSI | 15% | 0.20→0.15 |
+| MACD | 15% | |
+| 볼린저밴드 | 10% | |
+| 이동평균선 | 10% | |
+| 거래량 | 10% | 0.15→0.10 |
+| **지수 대비 상대강도** | **10%** | **신규** — 종목 5일 수익률 vs KOSPI(KS11) 5일 수익률, 시장 전체 상승과 종목 고유 강세 구분 |
+| (기술적 지표 합계) | 70% | |
+| 투자자 수급 | 30% | |
+
+## 지수 대비 상대강도 (2026-08-21 추가)
+- `TechnicalIndicators.relative_strength_signal(stock_5d_return, index_5d_return)` — 초과수익률 기준 -1~+1
+- 벤치마크는 항상 KOSPI(`KS11`, FinanceDataReader) 사용 — 거래량 상위 스캔 결과에서 KOSPI/KOSDAQ 구분이 불가능한 기존 제약(FID_BLNG_CLS_CODE 이슈, 위 참고)과 동일한 이유로 KOSDAQ 종목도 KS11 기준으로 비교하는 근사치
+- `_scan_once()`에서 스캔당 1회만 조회(`self._index_ohlcv`)해 전 종목이 공유 — 종목별 재조회 안 함
+- 지수 데이터 조회 실패 시 상대강도는 중립(0.0)으로 자동 degrade — 다른 지표에 영향 없음
+
+## ATR 기반 동적 손절/목표가 (2026-08-21 추가, 자동매매 확장 대비)
+- 기존: 전 종목 공통 고정 손절 -3% / 목표 +5% (`config.yaml risk.stop_loss_pct/take_profit_pct`)
+- 변경: 종목별 14일 ATR(변동성)에 비례해 `SignalGenerator._calc_dynamic_risk()`가 매 신호 생성 시 산출
+  - 손절% = `-clamp(ATR% × atr_stop_multiplier(1.5), stop_loss_max_pct(-1.5) ~ stop_loss_min_pct(-6.0))`
+  - 목표% = `clamp(ATR% × atr_target_multiplier(2.5), take_profit_min_pct(3.0) ~ take_profit_max_pct(10.0))`
+  - ATR 계산 불가(데이터 부족) 시 기존 고정값(-3%/+5%)으로 폴백
+- `TradeSignal.stop_loss_pct/take_profit_pct`에 저장 → Slack 추천 액션(`realtime_monitor.py`)과 `to_slack_message()`에 반영
+- **자동매매 연동 지점**: `Portfolio.Position.stop_loss_pct/take_profit_pct`에 매수 시점 값을 저장(`add_position()` 파라미터) → `check_stop_loss/check_take_profit`가 종목별 값 사용. `OrderManager.buy()` → `AutoTrader._run_signal_scan()`까지 이미 배선 완료 (현재 `trading.mode: "manual"`이라 미실행 상태, 모드 전환 시 바로 동작)
+  - 보유 중 신호 재계산 시에도 `SignalGenerator.generate(position_stop_loss_pct=, position_take_profit_pct=)`로 매수 당시 기준을 그대로 사용 (전역 고정값 아님)
 
 ## 투자자 수급 가중치
 | 투자자 | 가중치 | 비고 |

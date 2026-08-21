@@ -244,7 +244,8 @@ class SignalGenerator:
         # RSI 단독 매도는 종합 점수가 음수일 때만 — 수급 양호 급등주에서 오발화 방지
         if ind.get("rsi", 50) >= sell_cfg["rsi_min"] and score < 0:
             reasons.append(f"RSI 과매수({ind['rsi']:.1f})")
-        if inv_hist.get("foreign_streak", 0) <= -3:
+        # 외국인 연속매도 단독 매도도 RSI와 동일하게 종합 점수가 음수일 때만 — 수급 양호 급등주 오발화 방지
+        if inv_hist.get("foreign_streak", 0) <= -3 and score < 0:
             reasons.append(f"외국인 {abs(inv_hist['foreign_streak'])}일 연속 매도")
 
         if reasons:

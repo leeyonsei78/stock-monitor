@@ -37,14 +37,24 @@ class SupabaseSignalStore:
             logger.error(f"Supabase 쿨다운 조회 실패 [{ticker}]: {e}")
             return True  # 오류 시 알림 허용
 
-    def save_signal(self, ticker: str, signal_type: str, score: float, price: int):
+    def save_signal(
+        self,
+        ticker: str,
+        signal_type: str,
+        score: float,
+        price: int,
+        expected_return_pct: Optional[float] = None,
+    ):
         try:
-            self._client.table("stock_signal_log").insert({
+            row = {
                 "ticker": ticker,
                 "signal_type": signal_type,
                 "score": score,
                 "current_price": price,
-            }).execute()
+            }
+            if expected_return_pct is not None:
+                row["expected_return_pct"] = expected_return_pct
+            self._client.table("stock_signal_log").insert(row).execute()
         except Exception as e:
             logger.error(f"Supabase 신호 저장 실패 [{ticker}]: {e}")
 
@@ -82,7 +92,10 @@ class SupabaseSignalStore:
         try:
             result = (
                 self._client.table("stock_signal_log")
-                .select("id, ticker, signal_type, score, current_price, alerted_at, price_after_1d, price_after_3d")
+                .select(
+                    "id, ticker, signal_type, score, current_price, alerted_at, "
+                    "price_after_1d, price_after_3d, expected_return_pct"
+                )
                 .is_("price_after_3d", "null")
                 .gte("alerted_at", since_iso)
                 .execute()

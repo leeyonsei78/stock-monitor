@@ -112,9 +112,16 @@ class RealtimeMonitor:
             return True
         return last_sig != signal_type.value
 
-    def _mark_alerted(self, ticker: str, signal_type: SignalType, score: float = 0, price: int = 0):
+    def _mark_alerted(
+        self,
+        ticker: str,
+        signal_type: SignalType,
+        score: float = 0,
+        price: int = 0,
+        expected_return_pct: Optional[float] = None,
+    ):
         if self._store:
-            self._store.save_signal(ticker, signal_type.value, score, price)
+            self._store.save_signal(ticker, signal_type.value, score, price, expected_return_pct)
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
 
@@ -507,7 +514,10 @@ class RealtimeMonitor:
         )
 
         self._notifier.send_sync(msg)
-        self._mark_alerted(ticker, signal.signal_type, signal.score, signal.current_price)
+        self._mark_alerted(
+            ticker, signal.signal_type, signal.score, signal.current_price,
+            signal.expected_return_pct,
+        )
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
             f"(점수 {signal.score:+.3f}) / 당일{intraday_change_pct:+.2f}%"

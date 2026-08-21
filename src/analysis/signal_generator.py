@@ -16,6 +16,7 @@ logger = setup_logger("signal")
 class SignalType(Enum):
     STRONG_BUY = "강한 매수"
     BUY = "매수"
+    WATCH = "관심"   # 종합점수는 매수선 통과, RSI/거래량 등 다른 조건에 막힌 근접 사례 (2026-08-21 추가)
     HOLD = "보유"
     SELL = "매도"
     STRONG_SELL = "강한 매도"
@@ -43,6 +44,7 @@ class TradeSignal:
         emoji = {
             SignalType.STRONG_BUY: "🚀",
             SignalType.BUY: "📈",
+            SignalType.WATCH: "🔍",
             SignalType.HOLD: "⏸️",
             SignalType.SELL: "📉",
             SignalType.STRONG_SELL: "🔴",
@@ -255,24 +257,29 @@ class SignalGenerator:
         vol_ratio = ind.get("volume_ratio", 1.0)
         ma20 = ind.get("ma20", 0)
         buy_reasons = []
+        watch_reasons = []   # 점수는 매수선 통과했지만 다른 조건에 막힌 사유 (관심 신호용)
 
-        meets_all = True
-        if score < buy_cfg["min_signal_score"]:
+        score_ok = score >= buy_cfg["min_signal_score"]
+        meets_all = score_ok
+        rsi_ok = rsi <= buy_cfg["rsi_max"]
+        if not rsi_ok:
             meets_all = False
-        if rsi > buy_cfg["rsi_max"]:
-            meets_all = False
+            watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
         day_return = ind.get("day_return", 0.0)
-        if vol_ratio < buy_cfg["volume_min_ratio"]:
-            if day_return >= 0.05:
-                # 최근 급락으로 거래량 기준선(중앙값) 자체가 높아진 상태에서
-                # 당일 5% 이상 급등은 거래량 배율 미달이어도 참여 강도가 충분한 것으로 간주 (2026-08-21)
-                buy_reasons.append(f"급등 거래량 예외(당일 {day_return*100:.1f}%)")
-            else:
-                meets_all = False
-        else:
+        volume_ok = vol_ratio >= buy_cfg["volume_min_ratio"] or day_return >= 0.05
+        if not volume_ok:
+            meets_all = False
+            watch_reasons.append(
+                f"거래량 부족({vol_ratio:.1f}x<{buy_cfg['volume_min_ratio']}, 당일{day_return*100:.1f}%<5%)"
+            )
+        elif vol_ratio >= buy_cfg["volume_min_ratio"]:
             buy_reasons.append(f"거래량 충분({vol_ratio:.1f}x)")
+        else:
+            # 최근 급락으로 거래량 기준선(중앙값) 자체가 높아진 상태에서
+            # 당일 5% 이상 급등은 거래량 배율 미달이어도 참여 강도가 충분한 것으로 간주 (2026-08-21)
+            buy_reasons.append(f"급등 거래량 예외(당일 {day_return*100:.1f}%)")
         # 원시 수량으로 확인 (score=-0.3이면 qty=0인데 score 기준 혼동 방지)
         foreign_qty = inv_current["raw"].get("foreign", 0)
         if buy_cfg["foreign_net_buy"]:
@@ -294,6 +301,10 @@ class SignalGenerator:
             if score >= 0.75 and inv_hist.get("foreign_streak", 0) >= 3:
                 return SignalType.STRONG_BUY, " / ".join(buy_reasons)
             return SignalType.BUY, " / ".join(buy_reasons)
+
+        if score_ok and watch_reasons:
+            # 종합점수는 매수선을 넘었는데 RSI/거래량 조건에 막힌 근접 사례 — 조용히 묻지 않고 알림 (2026-08-21)
+            return SignalType.WATCH, f"매수선 통과(점수 {score:.3f})했으나 " + ", ".join(watch_reasons)
 
         return SignalType.HOLD, "매매 조건 미충족"
 

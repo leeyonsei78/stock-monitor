@@ -28,6 +28,7 @@ REGULAR_CLOSE     = (15, 30)
 SIGNAL_EMOJI = {
     SignalType.STRONG_BUY:  "🚀",
     SignalType.BUY:         "📈",
+    SignalType.WATCH:       "🔍",
     SignalType.HOLD:        "⏸️",
     SignalType.SELL:        "📉",
     SignalType.STRONG_SELL: "🔴",
@@ -154,6 +155,16 @@ class RealtimeMonitor:
                 "stop_loss":  stop_loss,
                 "target_pct":    signal.take_profit_pct,
                 "stop_loss_pct": signal.stop_loss_pct,
+            }
+        elif signal.signal_type == SignalType.WATCH:
+            # 종합점수는 매수선을 넘었지만 RSI/거래량 조건 미충족 — 매수가는 참고용으로만 보여줌 (2026-08-21)
+            return {
+                "action":     "관심",
+                "buy_price":  price,
+                "sell_price": None,
+                "qty":        None,
+                "target":     None,
+                "stop_loss":  None,
             }
         else:
             return {
@@ -414,6 +425,9 @@ class RealtimeMonitor:
                 f"• 목표가: *{rec['target']:,}원* ({rec['target_pct']:+.1f}%)  |  "
                 f"손절가: *{rec['stop_loss']:,}원* ({rec['stop_loss_pct']:+.1f}%)  |  _ATR 변동성 기반_"
             )
+        elif rec.get("action") == "관심":
+            rec_lines.append(f"• 현재가: *{rec['buy_price']:,}원* — 매수 조건 일부 미충족으로 신규 매수는 보류")
+            rec_lines.append("• 아래 미충족 사유 해소되면 매수 후보로 전환")
         else:
             rec_lines.append(f"• 기준가: *{rec['sell_price']:,}원*")
             rec_lines.append(f"• 보유 중이면 매도 고려  |  미보유 시 신규 매수 금지")
@@ -584,6 +598,7 @@ class RealtimeMonitor:
         total      = len(stocks)
         buy_count  = 0
         sell_count = 0
+        watch_count = 0
         skipped    = 0
         errors     = 0
         processed  = 0
@@ -606,6 +621,8 @@ class RealtimeMonitor:
                         buy_count += 1
                     elif sig.signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
                         sell_count += 1
+                    elif sig.signal_type == SignalType.WATCH:
+                        watch_count += 1
                     time.sleep(0.3)
             except Exception as e:
                 logger.error(f"[{stock['ticker']}] 분석 중 예외: {e}")
@@ -617,6 +634,7 @@ class RealtimeMonitor:
             f"=== 스캔 완료: {processed}/{total}개 처리 | "
             f"매수신호 {buy_count}개 | "
             f"매도신호 {sell_count}개 | "
+            f"관심 {watch_count}개 | "
             f"스킵 {skipped}개 | 오류 {errors}개 | "
             f"소요 {elapsed_total:.0f}초 ==="
         )

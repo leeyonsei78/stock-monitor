@@ -256,9 +256,22 @@ git push origin main
 - **휴장일 데이터 특성**: KIS API는 휴장일에 전 종목 마지막 거래일 데이터를 그대로 반환함 → 데이터가 실제처럼 보이지만 전일 종가·수급 기준이므로 신호 무의미
 
 ## Supabase 테이블
-- `stock_signal_log`: 알림 쿨다운 관리
+- `stock_signal_log`: 알림 쿨다운 관리 + 신호 성과 추적 (2026-08-21 컬럼 추가: `price_after_1d`, `return_1d_pct`, `price_after_3d`, `return_3d_pct`)
 - `stock_price_snapshot`: 종목별 직전 가격 저장 (5분 변화율 계산용)
 - `stock_kis_token_cache`: KIS 액세스 토큰 캐싱 (id=1 단일 행, RLS 비활성화 필요)
+
+## 신호 성과 추적 (2026-08-21 추가)
+매수/매도 알림이 실제로 맞았는지 자동 검증하는 기능. 8/20 코스피 폭등일(+5.89%) 실데이터 분석 중
+볼린저·이평선·거래량 지표가 급락 후 반등을 오히려 매도/미달로 오판하는 구조적 버그를 발견해 수정한 것을 계기로 도입.
+- **저장 시점**: `stock_signal_log`에 알림 발생 시 이미 `ticker/signal_type/score/current_price/alerted_at` 저장됨 (기존 쿨다운 로직 재사용)
+- **평가 스크립트**: `evaluate_signals.py` — 신호 발생 후 KST 거래일 기준 1일/3일 경과 시 현재가 재조회 → 수익률 계산 → 매수는 상승/매도는 하락을 "적중"으로 판정, DB 업데이트 + Slack 요약 전송
+- **워크플로우**: `.github/workflows/evaluate_signals.yml` — 평일 18:10 KST (장후 시간외 종료 후) 1회 자동 실행, `workflow_dispatch`로 수동 실행도 가능
+- **알고리즘 개선**(`src/analysis/technical_indicators.py`, `signal_generator.py`, 2026-08-21):
+  - `bollinger_signal`: 당일 +3% 이상 급등 시 %b 상단권 진입을 과매수 매도가 아닌 돌파 지속으로 해석
+  - `ma_signal`: 현재가>ma5>ma20이면 ma60 미회복(급락 후 반등 구간)이어도 0.4→0.6
+  - `calc_volume_analysis`: 거래량 기준선 20일 평균→중앙값 (급락 구간 이상 거래량이 평균을 왜곡하는 문제 완화)
+  - 매수 AND조건: 거래량 배율 미달이어도 당일 +5% 이상 급등이면 예외 통과
+  - 검증: 위 수정으로 8/20 삼성전자가 종합점수 0.179→0.309로 매수조건 충족 (수정 전에는 19회 스캔 중 매수신호 0건)
 
 ---
 

@@ -76,6 +76,28 @@ class SupabaseSignalStore:
             logger.error(f"Supabase 가격 스냅샷 조회 실패 [{ticker}]: {e}")
             return None
 
+    # ── 신호 성과 추적 (매수/매도 적중 여부 검증용) ────────────────
+    def get_signals_pending_evaluation(self, since_iso: str) -> list[dict]:
+        """3일차 결과가 아직 없는 최근 신호 조회 (1일차 평가 대상도 여기 포함됨)"""
+        try:
+            result = (
+                self._client.table("stock_signal_log")
+                .select("id, ticker, signal_type, score, current_price, alerted_at, price_after_1d, price_after_3d")
+                .is_("price_after_3d", "null")
+                .gte("alerted_at", since_iso)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"신호 평가 대상 조회 실패: {e}")
+            return []
+
+    def update_signal_evaluation(self, row_id: int, fields: dict):
+        try:
+            self._client.table("stock_signal_log").update(fields).eq("id", row_id).execute()
+        except Exception as e:
+            logger.error(f"신호 평가 결과 저장 실패 [id={row_id}]: {e}")
+
     # ── KIS 토큰 캐싱 (30분마다 재발급 방지) ──────────────────────
     def save_access_token(self, token: str, expires_at: datetime):
         """KIS 액세스 토큰 Supabase에 저장 (실행 간 재사용)"""

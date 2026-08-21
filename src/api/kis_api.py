@@ -254,11 +254,15 @@ class KISApi:
         if not any(current.values()):
             logger.warning(f"[{ticker}] 투자자 데이터 전부 0. raw: {out[:1]}")
 
-        # ── 히스토리 (당일 제외, 날짜 오름차순) ─────────────────
+        # ── 히스토리 (첫 행=오늘 자리 제외, 날짜 오름차순) ─────────────────
+        # current_date로 매칭해서 제외하면, "당일 미집계 → 전일 데이터 대체" 상황에서
+        # 대체에 쓰인 실제 과거 거래일이 히스토리에서도 함께 빠지고 대신 진짜 오늘(전부 0)
+        # 행이 히스토리에 끼어들어가 연속매수/매도 추세가 항상 0으로 깨지는 버그가 있었음
+        # (2026-08-21 발견). out[0]은 항상 "오늘 자리"이므로 인덱스로만 제외하도록 수정.
         history = []
-        for row in out:
+        for row in out[1:]:
             date = row.get("stck_bsop_date", "")
-            if not date or date == current_date:
+            if not date:
                 continue
             try:
                 entry = _parse_row(row)

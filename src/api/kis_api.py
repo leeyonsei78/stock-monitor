@@ -246,7 +246,10 @@ class KISApi:
                 current = parsed
                 current_date = row.get("stck_bsop_date", "")
                 if i > 0:
-                    logger.info(f"[{ticker}] 장전 미집계 — {current_date} 전일 데이터 사용")
+                    # KIS 당일 투자자 순매수 데이터는 장 시작 직후는 물론 정규장 오후까지도
+                    # 미집계(0)로 나오는 경우가 흔함 (2026-08-21 확인: 13시대에도 미집계) — "장전"이 아니라
+                    # "당일 미집계"로 표현해 정규장 중 발생도 정상 동작임을 명확히 함
+                    logger.info(f"[{ticker}] 당일 투자자 데이터 미집계 — {current_date} 전일 데이터 사용")
                 break
         if not any(current.values()):
             logger.warning(f"[{ticker}] 투자자 데이터 전부 0. raw: {out[:1]}")

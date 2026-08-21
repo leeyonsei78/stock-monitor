@@ -238,6 +238,8 @@ git push origin main
 - **시장 코드 파라미터 (2026-08-13 수정)**: `get_current_price` / `get_investor_trading` / `get_investor_trading_history` 모두 `market` 파라미터 추가 (기본값 `"J"`)
   - 코스닥 스캔 추가(2026-08-12) 후 코스닥 종목에 `"J"`(코스피) 코드로 호출 → API 오류 → 15종목 전부 스킵되는 버그
   - `_scan_once()`에서 종목별 시장코드를 dict에 저장(`"market": "J"/"Q"`) → `_analyze_stock(market=)`으로 전달
+- **당일 투자자 데이터 집계 지연 (2026-08-21 확인)**: 당일 순매수 데이터는 장 시작(09:00 KST) 직후는 물론 **정규장 오후 1~2시대까지도 미집계(전부 0)인 경우가 흔함** → 대략 오후 3시 전후까지는 전일 데이터로 자동 대체됨 (`get_investor_trading` 내부 fallback, 로그: `"당일 투자자 데이터 미집계"` — 예전엔 "장전 미집계"로 표기해 정규장 중 발생을 혼란스럽게 함, 문구 수정)
+  - 이 시간대 신호점수의 수급(30% 비중) 요소는 사실상 전일 기준이라는 점 감안 필요
 
 ## OHLCV 데이터 주의사항
 - KIS 모의 API는 일봉 데이터(`inquire-daily-chartprice`) 미지원 → **FinanceDataReader**로 대체

@@ -325,6 +325,10 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
 - **주간 정확도 추이 리포트 (2026-08-21 추가)**: `weekly_accuracy_report.py` — 1일차 평가 완료된 신호 전체를 월~일 주 단위로 묶어 매수/매도 적중률·예상변동률 MAE의 주차별 추이 + 누적 요약을 Slack으로 전송
   - 워크플로우: `.github/workflows/weekly_accuracy_report.yml` — 매주 금요일 18:30 KST (evaluate_signals.yml 18:10 실행 이후) 자동 실행, `workflow_dispatch`로 수동 실행 가능
   - 평가 완료 신호가 5건 미만이면 "데이터 수집 중" 메시지만 전송 (Claude 클라우드 라우틴 대신 GitHub Actions 사용 — 클라우드 라우틴은 이 저장소의 Supabase/Slack Secrets에 접근 불가)
+  - **추적 지표 확장 (2026-08-21)**: `stock_signal_log`에 `reason TEXT` 컬럼 추가(Supabase 수동 SQL) — 신호 발생 사유 원문 저장
+    - 관심(WATCH) 신호 이후 실제 상승 여부(적중률·평균수익률)
+    - 오전(09~14시, 당일 투자자 데이터 미집계 구간) `reason`에 "연속" 포함된 신호 발생 빈도 — 투자자 히스토리 버그 수정(위 참고) 효과를 시간이 지나며 관찰하기 위함
+    - 주차별 평균 종합점수 — 수급 가중치 재분배(위 참고) 이후 점수 분포가 실제로 올라가는지 관찰하기 위함
 - **분기별 기술점수 백테스트 (2026-08-21 추가)**: `backtest_technical_score.py` — 섹터 대표 유동성 종목 35개 × 최근 2년치로 `get_technical_score()`를 재계산해 종합점수/개별지표(RSI·MACD·볼린저·이평선·거래량·상대강도) 각각과 향후 1/3/5일 수익률의 상관계수·5분위·상하위20% 스프레드를 Slack으로 전송
   - 워크플로우: `.github/workflows/quarterly_backtest.yml` — 분기 첫날(1/4/7/10월 1일) 09:00 KST 자동 실행, `workflow_dispatch`로 수동 실행 가능. KIS 자격증명 불필요(FinanceDataReader만 사용), 결과 CSV는 Actions 아티팩트로 90일 보관
   - **리포트만 자동화, 가중치 변경은 자동 반영 안 함** — 상관계수가 대체로 0.03 이하로 작아 노이즈와 실제 신호를 구분하려면 사람이 매 분기 리포트를 검토해서 수동으로 `signal_weights`에 반영해야 함

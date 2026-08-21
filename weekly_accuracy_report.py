@@ -1,7 +1,11 @@
 """
 주간 신호 정확도 추이 리포트
-stock_signal_log에 쌓인 1일차 평가 완료 신호를 주(월~일) 단위로 묶어
-매수/매도 적중률과 예상 변동률 예측 오차(MAE)가 주차별로 어떻게 변하는지 Slack으로 보고.
+stock_signal_log에 쌓인 1일차 평가 완료 신호를 주(월~일) 단위로 묶어 아래를 Slack으로 보고:
+- 매수/매도 적중률, 예상 변동률 예측 오차(MAE)
+- 관심(WATCH) 신호가 실제로 상승했는지 (2026-08-21 추가)
+- 오전(09~14시, 당일 투자자 데이터 미집계 구간) 연속매수/매도 신호 발생 빈도
+  — 히스토리 버그 수정(2026-08-21) 효과 관찰용, reason 컬럼 필요
+- 주차별 평균 종합점수 — 수급 가중치 재분배(2026-08-21) 이후 점수 분포 변화 관찰용
 GitHub Actions에서 매주 금요일 장마감 후 1회 실행 (evaluate_signals.py 이후).
 """
 import os
@@ -24,8 +28,10 @@ KST = ZoneInfo("Asia/Seoul")
 
 BUY_TYPES = {SignalType.BUY.value, SignalType.STRONG_BUY.value}
 SELL_TYPES = {SignalType.SELL.value, SignalType.STRONG_SELL.value}
+WATCH_TYPE = SignalType.WATCH.value  # "관심"
 
 MIN_ROWS_FOR_REPORT = 5  # 이보다 적으면 "데이터 수집 중" 메시지만 전송
+MORNING_LAG_START, MORNING_LAG_END = 9, 14  # 당일 투자자 데이터 미집계 구간(KST)
 
 
 def is_hit(signal_type: str, return_pct: float) -> bool:
@@ -60,6 +66,24 @@ def _group_stats(rows: list[dict]) -> list[str]:
             if (r["return_1d_pct"] >= 0) == (r["expected_return_pct"] >= 0)
         )
         parts.append(f"예측 방향적중 {dir_hits}/{len(pred_rows)}, MAE {mae:.1f}%p")
+
+    watch_rows = [r for r in rows if r["signal_type"] == WATCH_TYPE]
+    if watch_rows:
+        w_hits = sum(1 for r in watch_rows if r["return_1d_pct"] > 0)
+        w_avg = sum(r["return_1d_pct"] for r in watch_rows) / len(watch_rows)
+        parts.append(f"관심(WATCH) {len(watch_rows)}건 중 상승 {w_hits}건(평균 {w_avg:+.1f}%)")
+
+    avg_score = sum(r["score"] for r in rows) / len(rows)
+    parts.append(f"평균 종합점수 {avg_score:+.3f}")
+
+    streak_morning = sum(
+        1 for r in rows
+        if "연속" in (r.get("reason") or "")
+        and MORNING_LAG_START <= r["_alerted_kst"].hour < MORNING_LAG_END
+    )
+    if streak_morning:
+        parts.append(f"오전({MORNING_LAG_START}~{MORNING_LAG_END}시) 연속매수/매도 신호 {streak_morning}건")
+
     return parts
 
 
@@ -91,7 +115,8 @@ def main():
         alerted_at = datetime.fromisoformat(row["alerted_at"].replace("Z", "+00:00"))
         if alerted_at.tzinfo is None:
             alerted_at = alerted_at.replace(tzinfo=timezone.utc)
-        wk = week_start(alerted_at.astimezone(KST).date())
+        row["_alerted_kst"] = alerted_at.astimezone(KST)
+        wk = week_start(row["_alerted_kst"].date())
         weeks[wk].append(row)
 
     lines = [f"📈 *주간 신호 정확도 리포트* — {today_str}", ""]

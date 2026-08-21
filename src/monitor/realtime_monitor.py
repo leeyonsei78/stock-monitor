@@ -125,9 +125,10 @@ class RealtimeMonitor:
         score: float = 0,
         price: int = 0,
         expected_return_pct: Optional[float] = None,
+        reason: Optional[str] = None,
     ):
         if self._store:
-            self._store.save_signal(ticker, signal_type.value, score, price, expected_return_pct)
+            self._store.save_signal(ticker, signal_type.value, score, price, expected_return_pct, reason)
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
 
@@ -536,7 +537,7 @@ class RealtimeMonitor:
         self._notifier.send_sync(msg)
         self._mark_alerted(
             ticker, signal.signal_type, signal.score, signal.current_price,
-            signal.expected_return_pct,
+            signal.expected_return_pct, signal.reason,
         )
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "

@@ -44,6 +44,7 @@ class SupabaseSignalStore:
         score: float,
         price: int,
         expected_return_pct: Optional[float] = None,
+        reason: Optional[str] = None,
     ):
         try:
             row = {
@@ -54,6 +55,8 @@ class SupabaseSignalStore:
             }
             if expected_return_pct is not None:
                 row["expected_return_pct"] = expected_return_pct
+            if reason is not None:
+                row["reason"] = reason[:500]  # 컬럼 길이 방어
             self._client.table("stock_signal_log").insert(row).execute()
         except Exception as e:
             logger.error(f"Supabase 신호 저장 실패 [{ticker}]: {e}")
@@ -112,7 +115,7 @@ class SupabaseSignalStore:
                 self._client.table("stock_signal_log")
                 .select(
                     "id, ticker, signal_type, score, current_price, alerted_at, "
-                    "return_1d_pct, return_3d_pct, expected_return_pct"
+                    "return_1d_pct, return_3d_pct, expected_return_pct, reason"
                 )
                 .not_.is_("return_1d_pct", "null")
                 .gte("alerted_at", since_iso)

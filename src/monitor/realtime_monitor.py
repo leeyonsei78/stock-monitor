@@ -338,10 +338,11 @@ class RealtimeMonitor:
         investor_block = (
             f"👥 *투자자 동향*\n"
             f"{fmt_inv('외국인', fgn)}   {fmt_inv('기관', inst)}\n"
-            f"{fmt_inv('프로그램', prog)}   {fmt_inv('개인', ind_)}"
+            f"{fmt_inv('프로그램*', prog)}   {fmt_inv('개인', ind_)}"
         )
         if trend_str:
             investor_block += f"\n{trend_str}"
+        investor_block += "\n_*프로그램: KIS API가 실제 수량을 제공하지 않아 항상 0으로 표시 — 점수 계산에서도 제외(가중치 0%)됨_"
 
         # ── 기술적 지표 ──
         rsi     = ind.get("rsi", 0)

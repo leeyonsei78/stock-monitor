@@ -29,23 +29,28 @@ indicators:
 # 투자자 동향 분석 설정
 # ==========================================
 investor_analysis:
+  # 2026-08-21: program 가중치를 foreign/institution/individual로 재분배.
+  # KIS inquire-investor(FHKST01010900) 응답에 프로그램매매 수량 필드가 실제로
+  # 제공되지 않아 program은 항상 0으로 고정됨(src/api/kis_api.py) — 기존처럼
+  # program에 20%를 배정해두면 그 몫이 그냥 버려져 수급 점수가 이론상 최대
+  # ±0.80을 못 넘던 문제를 수정. 원래 비율(35:30:15)을 유지한 채 재분배.
   foreign:
-    weight: 0.35          # 외국인 가중치 (강한 영향력)
+    weight: 0.45          # 0.35→0.45
     buy_signal_days: 3    # N일 연속 순매수 → 강한 매수 신호
     strong_buy_threshold: 100000  # 강한 매수 기준 (주)
 
   institution:
-    weight: 0.30          # 기관 가중치
+    weight: 0.35          # 0.30→0.35
     buy_signal_days: 3
     strong_buy_threshold: 50000
 
   program:
-    weight: 0.20          # 프로그램 매매 가중치
+    weight: 0.0           # 0.20→0.0 — KIS API가 데이터를 제공하지 않아 항상 0, 점수 계산에서 제외
     arbitrage_weight: 0.5  # 차익거래 가중치
     non_arbitrage_weight: 0.5  # 비차익거래 가중치
 
   individual:             # 개미 (역방향 지표로 활용)
-    weight: 0.15
+    weight: 0.20          # 0.15→0.20
     contrarian: true      # 개미가 많이 사면 매도 신호로 해석
     contrarian_threshold: 200000  # 개미 대량 매수 시 경계
 

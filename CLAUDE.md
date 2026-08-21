@@ -227,13 +227,15 @@ git push origin main
 - **자동매매 연동 지점**: `Portfolio.Position.stop_loss_pct/take_profit_pct`에 매수 시점 값을 저장(`add_position()` 파라미터) → `check_stop_loss/check_take_profit`가 종목별 값 사용. `OrderManager.buy()` → `AutoTrader._run_signal_scan()`까지 이미 배선 완료 (현재 `trading.mode: "manual"`이라 미실행 상태, 모드 전환 시 바로 동작)
   - 보유 중 신호 재계산 시에도 `SignalGenerator.generate(position_stop_loss_pct=, position_take_profit_pct=)`로 매수 당시 기준을 그대로 사용 (전역 고정값 아님)
 
-## 투자자 수급 가중치
+## 투자자 수급 가중치 (2026-08-21 재조정)
 | 투자자 | 가중치 | 비고 |
 |---|---|---|
-| 외국인 | 35% | 가장 중요 |
-| 기관 | 30% | |
-| 프로그램 | 20% | |
-| 개인 | 15% | 역방향 지표 |
+| 외국인 | **45%** | 0.35→0.45, 가장 중요 |
+| 기관 | **35%** | 0.30→0.35 |
+| 개인 | **20%** | 0.15→0.20, 역방향 지표 |
+| 프로그램 | **0%** | 0.20→0.0 — **KIS `inquire-investor`(FHKST01010900)가 프로그램매매 수량을 제공하지 않아 항상 0** (`src/api/kis_api.py` `"program": 0`). 기존엔 여기 20%를 그대로 배정해둬서 수급 점수가 이론상 최대 ±0.80을 못 넘던 문제였음 — 나머지 3개 항목으로 재분배해 ±1.0 전 범위 사용 가능해짐 |
+
+Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 이유(API 미제공, 점수 계산 제외)를 각주로 표시함 (`realtime_monitor.py` `investor_block`).
 
 ---
 

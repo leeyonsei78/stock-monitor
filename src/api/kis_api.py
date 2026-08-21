@@ -416,13 +416,17 @@ class KISApi:
         )
         result = []
         for row in data.get("output", [])[:limit]:
+            price = int(row.get("stck_prpr", 0))
+            listed_shares = int(row.get("lstn_stcn", 0))
             result.append({
                 "ticker": row.get("mksc_shrn_iscd", ""),
                 "name": row.get("hts_kor_isnm", ""),
-                "price": int(row.get("stck_prpr", 0)),
+                "price": price,
                 "change_pct": float(row.get("prdy_ctrt", 0)),
                 "volume": int(row.get("acml_vol", 0)),
                 "volume_ratio": float(row.get("vol_inrt", 0)),
+                # lstn_stcn(상장주식수)이 응답에 이미 포함되어 있어 추가 API 호출 없이 시가총액 계산 가능 (2026-08-21)
+                "market_cap": listed_shares * price,
             })
         return result
 

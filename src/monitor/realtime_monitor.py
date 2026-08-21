@@ -40,6 +40,7 @@ ETF_EXCLUDE_KEYWORDS = (
     "레버리지", "인버스", "2X",
     "미국", "나스닥", "S&P",
     "차이나", "베트남", "일본", "유럽", "선진국", "신흥국",
+    "스팩",  # strategy.yaml screening.exclude_spac 반영 (2026-08-21)
 )
 
 
@@ -54,6 +55,8 @@ class RealtimeMonitor:
     def __init__(self, config_path: str = "config/config.yaml", store=None):
         with open(config_path, "r", encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)
+        with open("config/strategy.yaml", "r", encoding="utf-8") as f:
+            strategy_cfg = yaml.safe_load(f)
 
         monitor_cfg = self._cfg.get("monitor", {})
         self._scan_top_n      = monitor_cfg.get("scan_top_n", 30)
@@ -61,6 +64,8 @@ class RealtimeMonitor:
         self._cooldown_sec    = monitor_cfg.get("alert_cooldown_sec", 1800)  # 30분
         self._budget_per_stock = self._cfg["trading"].get("max_budget_per_stock", 1_000_000)
         self._watchlist       = monitor_cfg.get("watchlist", [])
+        # 거래량 상위 후보 종목 스크리닝 — watchlist에는 미적용(사용자가 직접 고른 종목이므로) (2026-08-21)
+        self._screening       = strategy_cfg.get("screening", {})
 
         self._store    = store  # SupabaseSignalStore or None (in-memory fallback)
         self._api      = KISApi(store=store)
@@ -548,6 +553,11 @@ class RealtimeMonitor:
         watchlist_tickers = {s["ticker"] for s in stocks}
         # FID_BLNG_CLS_CODE "1"/"2"는 시장 구분이 아닌 종목등급 코드라 KOSPI/KOSDAQ 분리 불가 (2026-08-20 확인)
         # 전체(=0) 한 번 조회 후 ETF 키워드 + isdigit 필터링으로 scan_top_n개 확보
+        scr = self._screening
+        min_price     = scr.get("min_price", 0)
+        max_price     = scr.get("max_price", float("inf"))
+        min_volume    = scr.get("min_volume", 0)
+        min_market_cap = scr.get("min_market_cap", 0)
         try:
             added = 0
             for s in self._api.get_top_volume_stocks(market="J", limit=100):
@@ -555,6 +565,14 @@ class RealtimeMonitor:
                     break
                 if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
                     if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
+                        continue
+                    # 시가총액/가격/거래량 스크리닝 — strategy.yaml screening 섹션 (2026-08-21, 기존엔 미연결 상태였음)
+                    # exclude_etf는 여기 적용 안 함: 국내 섹터 ETF(반도체/2차전지 등)는 의도적으로 유지 (위 ETF_EXCLUDE_KEYWORDS 참고)
+                    if not (min_price <= s["price"] <= max_price):
+                        continue
+                    if s["volume"] < min_volume:
+                        continue
+                    if s.get("market_cap", 0) < min_market_cap:
                         continue
                     stocks.append({"ticker": s["ticker"], "name": s["name"], "market": "J"})
                     watchlist_tickers.add(s["ticker"])

@@ -216,7 +216,8 @@ class SignalGenerator:
 
         basis = (
             f"최근 14일 변동성(ATR) {atr_pct:.1f}%에 신호강도(점수 {score:+.2f}, "
-            f"신뢰도 {confidence*100:.0f}%)를 반영한 경험적 추정 — 실제 결과 데이터 검증 전 참고치"
+            f"신뢰도 {confidence*100:.0f}%)를 반영한 경험적 추정치 — 1~3일 후 실제 등락률과 비교해 "
+            f"정확도 검증 중, 확률이나 특정 시점 예측이 아닌 대략적 크기 참고치"
         )
         return round(expected_pct, 2), basis
 

@@ -97,6 +97,8 @@ class VirtualTrader:
             stop_price=stop_price,
             target_pct=signal.take_profit_pct,
             stop_pct=signal.stop_loss_pct,
+            # 진입 시점 예상 등락률 — 청산 후 실제 수익률과 비교해 예측 정확도 계산에 사용 (2026-08-24)
+            expected_return_pct=signal.expected_return_pct,
         )
         if row_id:
             logger.info(

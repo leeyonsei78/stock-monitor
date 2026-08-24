@@ -164,23 +164,25 @@ class SupabaseSignalStore:
         stop_price: int,
         target_pct: float,
         stop_pct: float,
+        expected_return_pct: Optional[float] = None,
     ) -> Optional[int]:
         try:
-            result = (
-                self._client.table("stock_virtual_position")
-                .insert({
-                    "ticker": ticker,
-                    "name": name,
-                    "signal_type": signal_type,
-                    "entry_price": entry_price,
-                    "qty": qty,
-                    "target_price": target_price,
-                    "stop_price": stop_price,
-                    "target_pct": target_pct,
-                    "stop_pct": stop_pct,
-                })
-                .execute()
-            )
+            row = {
+                "ticker": ticker,
+                "name": name,
+                "signal_type": signal_type,
+                "entry_price": entry_price,
+                "qty": qty,
+                "target_price": target_price,
+                "stop_price": stop_price,
+                "target_pct": target_pct,
+                "stop_pct": stop_pct,
+            }
+            # 진입 시점의 예상 등락률(ATR×신호강도 경험적 추정치) 저장 — 청산 후 실제 수익률과
+            # 비교해 "예측이 실제 거래 결과와 얼마나 맞았는지" 정확도 계산에 사용 (2026-08-24 추가)
+            if expected_return_pct is not None:
+                row["expected_return_pct"] = expected_return_pct
+            result = self._client.table("stock_virtual_position").insert(row).execute()
             return result.data[0]["id"] if result.data else None
         except Exception as e:
             logger.error(f"가상 포지션 진입 저장 실패 [{ticker}]: {e}")
@@ -222,7 +224,7 @@ class SupabaseSignalStore:
                 self._client.table("stock_virtual_position")
                 .select(
                     "id, ticker, name, signal_type, entry_price, entry_at, "
-                    "exit_price, exit_at, exit_reason, return_pct, hold_days"
+                    "exit_price, exit_at, exit_reason, return_pct, hold_days, expected_return_pct"
                 )
                 .eq("status", "closed")
                 .gte("exit_at", since_iso)

@@ -7,8 +7,11 @@ stock_signal_log에 쌓인 1일차 평가 완료 신호를 주(월~일) 단위�
   — 히스토리 버그 수정(2026-08-21) 효과 관찰용, reason 컬럼 필요
 - 주차별 평균 종합점수 — 수급 가중치 재분배(2026-08-21) 이후 점수 분포 변화 관찰용
 - 가상매매(paper trading) 청산 결과 — target_hit/stop_hit/reversal_sell/timeout 비율,
-  평균 수익률·보유일수 (2026-08-24 추가). 위 신호 적중률과는 독립적인 데이터 소스라 별도로
-  최소 건수 게이트를 두고, 신호 적중률 섹션 데이터가 부족해도 이 섹션은 별도로 표시됨
+  평균 수익률·보유일수 + 진입 시점 예상 등락률과 실제 청산 수익률의 방향적중·MAE (2026-08-24 추가).
+  위 신호 적중률과는 독립적인 데이터 소스라 별도로 최소 건수 게이트를 두고, 신호 적중률 섹션
+  데이터가 부족해도 이 섹션은 별도로 표시됨. 예상 등락률 정확도는 위 신호 적중률 섹션에도 있지만
+  (1일/3일 스냅샷 비교) 이쪽은 실제 목표가/손절가/반대신호로 청산된 완결된 거래 결과와 비교하는
+  것이라 더 정확함
 GitHub Actions에서 매주 금요일 장마감 후 1회 실행 (evaluate_signals.py 이후).
 """
 import os
@@ -110,7 +113,20 @@ def _vt_stat_line(rows: list[dict]) -> str:
     )
     avg_return = sum(r["return_pct"] for r in rows) / len(rows)
     avg_hold = sum(r["hold_days"] for r in rows) / len(rows)
-    return f"{reason_str} | 평균수익률 {avg_return:+.1f}% | 평균보유 {avg_hold:.1f}거래일"
+    line = f"{reason_str} | 평균수익률 {avg_return:+.1f}% | 평균보유 {avg_hold:.1f}거래일"
+
+    # 진입 시점 예상 등락률 vs 실제 청산 수익률 비교 — evaluate_signals.py의 1일/3일 스냅샷 비교보다
+    # 더 정확함: 실제 목표가/손절가/반대신호로 청산된 "완결된 거래" 결과와 비교하는 것이라서 (2026-08-24 추가)
+    pred_rows = [r for r in rows if r.get("expected_return_pct") is not None]
+    if pred_rows:
+        errors = [abs(r["return_pct"] - r["expected_return_pct"]) for r in pred_rows]
+        mae = sum(errors) / len(errors)
+        dir_hits = sum(
+            1 for r in pred_rows
+            if (r["return_pct"] >= 0) == (r["expected_return_pct"] >= 0)
+        )
+        line += f" | 예상등락률 방향적중 {dir_hits}/{len(pred_rows)}, MAE {mae:.1f}%p"
+    return line
 
 
 def _virtual_trading_section(vt_rows: list[dict]) -> str:

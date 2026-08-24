@@ -144,7 +144,7 @@ class SignalGenerator:
 
         stop_loss_pct, take_profit_pct = self._calc_dynamic_risk(ind.get("atr_pct"))
         expected_return_pct, expected_return_basis = self._calc_expected_return(
-            ind.get("atr_pct"), final_score
+            ind.get("atr_pct"), final_score, signal_type
         )
 
         sig = TradeSignal(
@@ -186,10 +186,17 @@ class SignalGenerator:
 
         return round(stop_loss_pct, 2), round(take_profit_pct, 2)
 
-    def _calc_expected_return(self, atr_pct: Optional[float], score: float) -> tuple[float, str]:
+    def _calc_expected_return(
+        self, atr_pct: Optional[float], score: float, signal_type: SignalType
+    ) -> tuple[float, str]:
         """예상 변동률(경험적 추정) 산출 — 통계 검증된 예측이 아니라 참고용 어림값.
-        방향은 신호점수 부호, 크기는 최근 14일 변동성(ATR)에 신호강도(|점수|)를 곱해 결정.
-        신호가 강할수록(0.75=강한매수/매도 기준) ATR의 최대 1.5배, 약할수록 최소 0.5배로 스케일.
+        방향은 signal_type 기준(BUY/STRONG_BUY/WATCH=상승, SELL/STRONG_SELL=하락), 크기는 최근
+        14일 변동성(ATR)에 신호강도(|점수|)를 곱해 결정. 신호가 강할수록(0.75=강한매수/매도 기준)
+        ATR의 최대 1.5배, 약할수록 최소 0.5배로 스케일.
+        방향을 score 부호가 아닌 signal_type으로 판단하는 이유(2026-08-24 수정): stale_data_override
+        (당일 투자자 데이터 미집계 + 극단적 등락 시 안전장치)로 종합점수가 양수인데도 SELL이 뜨는
+        경우가 생겨서(8/24 삼성전자 실측: score=+0.288인데 매도) — score 부호로 방향을 정하면 매도
+        신호에 "+6.1%" 같은 상승 예상치가 붙는 모순이 발생했음
         실제 신호-결과 데이터(evaluate_signals.py)가 쌓이면 회귀모델 기반으로 교체 예정 (2026-08-21 추가)"""
         cfg = self._cfg["prediction"]
         if not atr_pct or atr_pct <= 0:
@@ -197,7 +204,12 @@ class SignalGenerator:
 
         confidence = min(1.0, abs(score) / cfg["confidence_score_ref"])
         multiplier = cfg["multiplier_min"] + (cfg["multiplier_max"] - cfg["multiplier_min"]) * confidence
-        direction = 1 if score >= 0 else -1
+        if signal_type in (SignalType.BUY, SignalType.STRONG_BUY, SignalType.WATCH):
+            direction = 1
+        elif signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
+            direction = -1
+        else:
+            direction = 1 if score >= 0 else -1
         expected_pct = direction * atr_pct * multiplier
 
         basis = (

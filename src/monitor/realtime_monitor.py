@@ -77,6 +77,9 @@ class RealtimeMonitor:
         # config.yaml에 키만 있고 값이 비어있으면 YAML이 None으로 파싱해 .get()의 기본값이
         # 적용되지 않음 (키는 존재하므로) → or {}로 방어 (2026-08-21)
         self._watchlist_markets: dict[str, str] = monitor_cfg.get("watchlist_markets") or {}
+        # watchlist 종목명 — get_current_price(FHKST01010100)의 hts_kor_isnm이 이 TR에서는
+        # 항상 빈 문자열로 와서 config에 직접 명시 (2026-08-24, 아래 _analyze_stock 참고)
+        self._watchlist_names: dict[str, str] = monitor_cfg.get("watchlist_names") or {}
 
         # in-memory 쿨다운 (Supabase 미사용 시)
         self._last_alert: dict[str, tuple[str, datetime]] = {}
@@ -474,7 +477,9 @@ class RealtimeMonitor:
         try:
             signal = self._signal.generate(
                 ticker=ticker,
-                name=name or current_info.get("name", ticker),
+                # current_info["name"]은 항상 존재하는 키라 .get("name", ticker) 기본값이
+                # 절대 안 걸림(hts_kor_isnm이 빈 문자열로 와도 키 자체는 있음) → or로 방어 (2026-08-24)
+                name=name or current_info.get("name") or ticker,
                 ohlcv=ohlcv,
                 investor_current=investor_current,
                 investor_history=investor_hist,
@@ -564,7 +569,8 @@ class RealtimeMonitor:
 
         for ticker in self._watchlist:
             market = self._watchlist_markets.get(ticker, "J")
-            stocks.append({"ticker": ticker, "name": "", "market": market})
+            name = self._watchlist_names.get(ticker, "")
+            stocks.append({"ticker": ticker, "name": name, "market": market})
 
         watchlist_tickers = {s["ticker"] for s in stocks}
         # FID_BLNG_CLS_CODE "1"/"2"는 시장 구분이 아닌 종목등급 코드라 KOSPI/KOSDAQ 분리 불가 (2026-08-20 확인)

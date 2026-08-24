@@ -62,6 +62,14 @@ monitor:
     - "000660"                 # SK하이닉스
     - "035420"                 # NAVER
     - "051910"                 # LG화학
+  watchlist_names:             # 위 종목의 한글명 (2026-08-24 추가)
+    # get_current_price(FHKST01010100)의 hts_kor_isnm이 이 TR에서는 항상 빈 문자열로 와서
+    # (get_top_volume_stocks/FHPST01710000은 정상 제공) 워치리스트 종목명이 Slack에 공백으로
+    # 나가던 버그 수정 — API에 의존하지 않도록 워치리스트 이름은 여기서 직접 관리
+    "005930": "삼성전자"
+    "000660": "SK하이닉스"
+    "035420": "NAVER"
+    "051910": "LG화학"
   watchlist_markets:           # 코스닥 watchlist 종목은 여기에 ticker: "Q" 추가 (기본값 "J" = 코스피)
     # "035900": "Q"            # 예시: 오뚜기 코스닥이면 이렇게 추가
 

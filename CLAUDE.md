@@ -273,6 +273,12 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
 - `ConnectionError` / `Timeout` 발생 시 3회 자동 재시도 (3초·6초 간격)
 - 모든 API 요청 timeout 10초
 
+## 종목명 표시 버그 (2026-08-24 수정)
+- **증상**: watchlist 종목(005930/000660/035420/051910)의 Slack 알림·로그에서 종목명이 공백으로 나옴 (예: `[000660]  신호=관심`) — 000660 관심(WATCH) 알림에서 사용자가 최초 발견. 실제로는 워치리스트 4종목 전부 공백이었는데 그날 나머지가 전부 "보유"라 Slack 알림이 안 가서 안 보였을 뿐이었음 (로그로 확인)
+- **원인 1**: `get_current_price`(FHKST01010100, 현재가 시세) 응답의 `hts_kor_isnm`이 이 TR에서는 항상 빈 문자열로 옴. 거래량 상위 TR(FHPST01710000)의 `hts_kor_isnm`은 정상 제공되어 스캔 종목(예: 005935 삼성전자우)은 이름이 정상 표시됐음 — TR마다 같은 필드명이라도 실제 제공 여부가 다름
+- **원인 2**: `realtime_monitor.py`의 `name or current_info.get("name", ticker)`에서 `current_info` dict는 `"name"` 키가 항상 존재(값이 빈 문자열이어도)하므로 `.get(key, default)`의 `default`가 절대 발동하지 않는 파이썬 흔한 함정 — 두 원인이 겹쳐 완전히 공백으로 노출됨
+- **수정**: watchlist는 종목이 고정돼 있으므로 API에 의존하지 않고 `config.yaml monitor.watchlist_names`(ticker→한글명)에서 직접 관리하도록 변경. `run_monitor.py --watch`로 즉석 추가하는 종목은 이 맵에 없으므로 계속 `current_info.get("name") or ticker` 폴백 사용 (동일한 `.get()` 함정도 함께 수정)
+
 ## KIS API 투자자 데이터 주의사항
 - `get_investor_trading` (FHKST01010900): 응답 순매수수량 필드는 **`frgn_ntby_qty` / `orgn_ntby_qty` / `prsn_ntby_qty` / `pgtr_ntby_qty`** (2026-08-10 수정)
   - 이전 코드 `sll_ntby_qty` 는 존재하지 않는 필드 → 전 종목 수급 점수가 -0.105로 고정되는 버그

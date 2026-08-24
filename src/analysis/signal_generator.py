@@ -263,7 +263,19 @@ class SignalGenerator:
         stale_cfg = self._cfg.get("stale_data_override", {})
         stale_threshold = stale_cfg.get("day_return_threshold", 0.05)
         stale_sell_override = is_stale_investor and day_return <= -stale_threshold
-        stale_buy_override = is_stale_investor and day_return >= stale_threshold
+        # 매수 오버라이드는 외국인/기관이 최근 며칠 연속 순매도 중이면 적용 안 함 (2026-08-24 추가) —
+        # "미집계라 못 믿는 데이터"라는 전제로 만들었는데, 실제로는 3일 전(전일 데이터) 시점 기준
+        # 최근 며칠간의 진짜 매도세를 무시하고 "당일 급등했으니 사라"는 셈이 되는 문제 발견
+        # (051910 LG화학 실측: score=-0.068, 외국인 2일·기관 4일 연속 순매도인데 당일+6.53%로
+        # 매수 오버라이드 발동 — 급등이 스마트머니가 파는 랠리로 물량을 떠넘기는 상황일 수 있음)
+        sell_streak_block = stale_cfg.get("buy_override_sell_streak_block", 2)
+        has_real_selling_streak = (
+            inv_hist.get("foreign_streak", 0) <= -sell_streak_block
+            or inv_hist.get("institution_streak", 0) <= -sell_streak_block
+        )
+        stale_buy_override = (
+            is_stale_investor and day_return >= stale_threshold and not has_real_selling_streak
+        )
 
         # 매도 조건 (OR)
         if score <= sell_cfg["min_signal_score"]:

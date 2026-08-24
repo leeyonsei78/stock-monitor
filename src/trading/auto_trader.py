@@ -11,6 +11,7 @@ from src.analysis.signal_generator import SignalGenerator, SignalType
 from src.trading.order_manager import OrderManager
 from src.trading.portfolio import Portfolio
 from src.notification.slack_bot import SlackNotifier
+from src.monitor.realtime_monitor import ETF_EXCLUDE_KEYWORDS
 from src.utils.logger import setup_logger
 
 logger = setup_logger("auto_trader")
@@ -53,12 +54,17 @@ class AutoTrader:
         """장 시작 전 거래량 상위 종목 스크리닝"""
         logger.info("종목 스크리닝 시작...")
         screen_cfg = yaml.safe_load(open("config/strategy.yaml", encoding="utf-8"))["screening"]
+        min_market_cap = screen_cfg.get("min_market_cap", 0)
         try:
             candidates = self._api.get_top_volume_stocks(limit=100)
             filtered = [
                 c for c in candidates
                 if screen_cfg["min_price"] <= c["price"] <= screen_cfg["max_price"]
                 and c["volume"] >= screen_cfg["min_volume"]
+                and c.get("market_cap", 0) >= min_market_cap
+                # 레버리지·인버스·해외지수 ETF 제외 — realtime_monitor.py와 동일 필터
+                # (RSI/수급 지표가 반대로 해석되는 상품이라 신호 로직 자체가 안 맞음)
+                and not any(kw in c["name"] for kw in ETF_EXCLUDE_KEYWORDS)
             ]
             self._watchlist = filtered[:self._trade_cfg["max_stocks"] * 3]
             logger.info(f"감시 종목 선정: {len(self._watchlist)}개")
@@ -130,8 +136,10 @@ class AutoTrader:
                 if len(ohlcv) < 60:
                     continue
 
-                inv_current = self._api.get_investor_trading(ticker)
-                inv_history = self._api.get_investor_trading_history(ticker, days=10)
+                # get_investor_trading/get_investor_trading_history 래퍼 둘 다 내부적으로
+                # get_investor_data()를 다시 호출해 API를 2번 때리므로 직접 호출로 1번으로 축소
+                inv_current, inv_history = self._api.get_investor_data(ticker)
+                inv_history = inv_history[-10:] if len(inv_history) > 10 else inv_history
 
                 pos = self._portfolio.get_position(ticker)
                 holding_qty = pos.quantity if pos else 0

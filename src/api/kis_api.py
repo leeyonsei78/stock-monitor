@@ -22,6 +22,20 @@ load_dotenv()
 logger = setup_logger("kis_api")
 
 
+def _safe_int(v, default: int = 0) -> int:
+    """KIS API 응답 필드가 누락 대신 빈 문자열("")로 오는 경우가 흔해(실측 확인된 사례:
+    FHKST01010800/FHKST01010900) int(v)가 ValueError를 던지는 걸 방지"""
+    if v is None or v == "":
+        return default
+    return int(v)
+
+
+def _safe_float(v, default: float = 0.0) -> float:
+    if v is None or v == "":
+        return default
+    return float(v)
+
+
 class KISApi:
     def __init__(self, store=None):
         with open("config/config.yaml", "r", encoding="utf-8") as f:
@@ -176,14 +190,14 @@ class KISApi:
             # 참고) 종목별 현재가 조회는 이미 전 종목에 대해 호출되므로 여기서 얻는다 (2026-08-24 추가,
             # Slack 표시용) — 원본 필드값이 "코스피"가 아니라 KOSPI200 등이라 정규화 필요 (위 참고)
             "market_name": KISApi._normalize_market_name(out.get("rprs_mrkt_kor_name", "")),
-            "price": int(out.get("stck_prpr", 0)),
-            "open": int(out.get("stck_oprc", 0)),
-            "high": int(out.get("stck_hgpr", 0)),
-            "low": int(out.get("stck_lwpr", 0)),
-            "prev_close": int(out.get("stck_sdpr", 0)),
-            "change_pct": float(out.get("prdy_ctrt", 0)),
-            "volume": int(out.get("acml_vol", 0)),
-            "trade_amount": int(out.get("acml_tr_pbmn", 0)),
+            "price": _safe_int(out.get("stck_prpr")),
+            "open": _safe_int(out.get("stck_oprc")),
+            "high": _safe_int(out.get("stck_hgpr")),
+            "low": _safe_int(out.get("stck_lwpr")),
+            "prev_close": _safe_int(out.get("stck_sdpr")),
+            "change_pct": _safe_float(out.get("prdy_ctrt")),
+            "volume": _safe_int(out.get("acml_vol")),
+            "trade_amount": _safe_int(out.get("acml_tr_pbmn")),
         }
 
     def get_daily_ohlcv(self, ticker: str, period: int = 120) -> list[dict]:
@@ -304,11 +318,11 @@ class KISApi:
         for row in data.get("output2", []):
             result.append({
                 "time": row.get("stck_cntg_hour", ""),
-                "open": int(row.get("stck_oprc", 0)),
-                "high": int(row.get("stck_hgpr", 0)),
-                "low": int(row.get("stck_lwpr", 0)),
-                "close": int(row.get("stck_prpr", 0)),
-                "volume": int(row.get("cntg_vol", 0)),
+                "open": _safe_int(row.get("stck_oprc")),
+                "high": _safe_int(row.get("stck_hgpr")),
+                "low": _safe_int(row.get("stck_lwpr")),
+                "close": _safe_int(row.get("stck_prpr")),
+                "volume": _safe_int(row.get("cntg_vol")),
             })
         return result
 
@@ -329,11 +343,10 @@ class KISApi:
         out = data.get("output", [])
 
         def _parse_row(row: dict) -> dict:
-            def _int(v): return int(v or "0") if v is not None else 0
             return {
-                "foreign":     _int(row.get("frgn_ntby_qty")),
-                "institution": _int(row.get("orgn_ntby_qty")),
-                "individual":  _int(row.get("prsn_ntby_qty")),
+                "foreign":     _safe_int(row.get("frgn_ntby_qty")),
+                "institution": _safe_int(row.get("orgn_ntby_qty")),
+                "individual":  _safe_int(row.get("prsn_ntby_qty")),
                 "program":     0,  # pgtr_ntby_qty 미제공 확인
             }
 
@@ -412,24 +425,25 @@ class KISApi:
         )
         holdings = []
         for row in data.get("output1", []):
-            if int(row.get("hldg_qty", 0)) == 0:
+            qty = _safe_int(row.get("hldg_qty"))
+            if qty == 0:
                 continue
             holdings.append({
                 "ticker": row.get("pdno", ""),
                 "name": row.get("prdt_name", ""),
-                "quantity": int(row.get("hldg_qty", 0)),
-                "avg_price": float(row.get("pchs_avg_pric", 0)),
-                "current_price": int(row.get("prpr", 0)),
-                "eval_amount": int(row.get("evlu_amt", 0)),
-                "profit_loss": float(row.get("evlu_pfls_rt", 0)),
+                "quantity": qty,
+                "avg_price": _safe_float(row.get("pchs_avg_pric")),
+                "current_price": _safe_int(row.get("prpr")),
+                "eval_amount": _safe_int(row.get("evlu_amt")),
+                "profit_loss": _safe_float(row.get("evlu_pfls_rt")),
             })
 
         summary = data.get("output2", [{}])[0]
         return {
             "holdings": holdings,
-            "total_eval": int(summary.get("tot_evlu_amt", 0)),
-            "cash": int(summary.get("dnca_tot_amt", 0)),
-            "profit_loss_pct": float(summary.get("tot_evlu_pfls_rt", 0)),
+            "total_eval": _safe_int(summary.get("tot_evlu_amt")),
+            "cash": _safe_int(summary.get("dnca_tot_amt")),
+            "profit_loss_pct": _safe_float(summary.get("tot_evlu_pfls_rt")),
         }
 
     # ── 주문 ─────────────────────────────────────────────────────
@@ -525,15 +539,15 @@ class KISApi:
         )
         result = []
         for row in data.get("output", [])[:limit]:
-            price = int(row.get("stck_prpr", 0))
-            listed_shares = int(row.get("lstn_stcn", 0))
+            price = _safe_int(row.get("stck_prpr"))
+            listed_shares = _safe_int(row.get("lstn_stcn"))
             result.append({
                 "ticker": row.get("mksc_shrn_iscd", ""),
                 "name": row.get("hts_kor_isnm", ""),
                 "price": price,
-                "change_pct": float(row.get("prdy_ctrt", 0)),
-                "volume": int(row.get("acml_vol", 0)),
-                "volume_ratio": float(row.get("vol_inrt", 0)),
+                "change_pct": _safe_float(row.get("prdy_ctrt")),
+                "volume": _safe_int(row.get("acml_vol")),
+                "volume_ratio": _safe_float(row.get("vol_inrt")),
                 # lstn_stcn(상장주식수)이 응답에 이미 포함되어 있어 추가 API 호출 없이 시가총액 계산 가능 (2026-08-21)
                 "market_cap": listed_shares * price,
             })

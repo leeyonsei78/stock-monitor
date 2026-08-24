@@ -109,8 +109,10 @@ class ManualTrader:
                     ohlcv = self._api.get_daily_ohlcv(ticker, period=120)
                     if len(ohlcv) < 60:
                         continue
-                    inv_current = self._api.get_investor_trading(ticker)
-                    inv_history = self._api.get_investor_trading_history(ticker, days=10)
+                    # get_investor_trading/get_investor_trading_history 래퍼 둘 다 내부적으로
+                    # get_investor_data()를 다시 호출해 API를 2번 때리므로 직접 호출로 1번으로 축소
+                    inv_current, inv_history = self._api.get_investor_data(ticker)
+                    inv_history = inv_history[-10:] if len(inv_history) > 10 else inv_history
                     signal = self._signal_gen.generate(
                         ticker, stock["name"], ohlcv, inv_current, inv_history
                     )

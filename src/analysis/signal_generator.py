@@ -333,6 +333,7 @@ class SignalGenerator:
         if buy_cfg["foreign_net_buy"]:
             if foreign_qty <= 0:
                 meets_all = False
+                watch_reasons.append(f"외국인 순매수 조건 미충족({foreign_qty:+,}주)")
             else:
                 buy_reasons.append("외국인 순매수")
         elif foreign_qty > 0:
@@ -340,6 +341,7 @@ class SignalGenerator:
         if buy_cfg["price_above_ma20"]:
             if current_price < ma20:
                 meets_all = False
+                watch_reasons.append(f"20일선 아래({current_price:,}<{ma20:,.0f})")
             else:
                 buy_reasons.append("20일선 위")
         elif current_price > ma20:

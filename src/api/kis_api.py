@@ -257,7 +257,7 @@ class KISApi:
             }
 
         # ── 당일 (non-zero 행 우선) ──────────────────────────────
-        current = {"foreign": 0, "institution": 0, "individual": 0, "program": 0}
+        current = {"foreign": 0, "institution": 0, "individual": 0, "program": 0, "is_stale": False}
         current_date = ""
         for i, row in enumerate(out):
             parsed = _parse_row(row)
@@ -269,8 +269,13 @@ class KISApi:
                     # 미집계(0)로 나오는 경우가 흔함 (2026-08-21 확인: 13시대에도 미집계) — "장전"이 아니라
                     # "당일 미집계"로 표현해 정규장 중 발생도 정상 동작임을 명확히 함
                     logger.info(f"[{ticker}] 당일 투자자 데이터 미집계 — {current_date} 전일 데이터 사용")
+                # 전일 데이터로 대체됐는지 여부를 신호 생성 로직까지 전달 (2026-08-24 추가) —
+                # signal_generator.py가 이 상태에서 당일 등락폭이 극단적이면 왜곡된 수급점수를
+                # 무시하는 안전장치에 사용 (8/24 삼성전자 -8.5% 급락에도 전일 강세 수급 데이터가
+                # 남아있어 종합점수가 계속 양수라 매도 신호가 전혀 안 뜨던 사례로 발견)
+                current["is_stale"] = i > 0
                 break
-        if not any(current.values()):
+        if not any(v for k, v in current.items() if k != "is_stale"):
             logger.warning(f"[{ticker}] 투자자 데이터 전부 0. raw: {out[:1]}")
 
         # ── 히스토리 (첫 행=오늘 자리 제외, 날짜 오름차순) ─────────────────

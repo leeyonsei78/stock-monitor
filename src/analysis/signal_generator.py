@@ -237,6 +237,18 @@ class SignalGenerator:
         ind = tech_result["indicators"]
         inv_current = inv_result["current"]
         inv_hist = inv_result["history"]
+        day_return = ind.get("day_return", 0.0)
+
+        # 당일 투자자 데이터 미집계 시 안전장치 (2026-08-24 추가) — 미집계로 전일 데이터를 쓰는 중이면
+        # 수급 30% 가중치가 전일 기준이라 종합점수가 왜곡될 수 있음. 이 상태에서 당일 등락폭이
+        # 극단적이면 그 왜곡된 점수 기반 게이트를 무시. 실측: 8/24 삼성전자 당일 -8.5% 급락에도 전일
+        # (8/21 급등일) 강세 수급 데이터가 남아있어 종합점수가 계속 양수라 매도 조건이 전부 score<0
+        # 가드에 막혔던 사례로 발견 (`stale_data_override`, strategy.yaml)
+        is_stale_investor = inv_current["raw"].get("is_stale", False)
+        stale_cfg = self._cfg.get("stale_data_override", {})
+        stale_threshold = stale_cfg.get("day_return_threshold", 0.05)
+        stale_sell_override = is_stale_investor and day_return <= -stale_threshold
+        stale_buy_override = is_stale_investor and day_return >= stale_threshold
 
         # 매도 조건 (OR)
         if score <= sell_cfg["min_signal_score"]:
@@ -247,6 +259,10 @@ class SignalGenerator:
         # 외국인 연속매도 단독 매도도 RSI와 동일하게 종합 점수가 음수일 때만 — 수급 양호 급등주 오발화 방지
         if inv_hist.get("foreign_streak", 0) <= -3 and score < 0:
             reasons.append(f"외국인 {abs(inv_hist['foreign_streak'])}일 연속 매도")
+        if stale_sell_override:
+            reasons.append(
+                f"당일 급락({day_return*100:.1f}%) — 투자자 데이터 미집계로 왜곡된 수급점수 무시"
+            )
 
         if reasons:
             if score < -0.7:
@@ -261,6 +277,11 @@ class SignalGenerator:
         watch_reasons = []   # 점수는 매수선 통과했지만 다른 조건에 막힌 사유 (관심 신호용)
 
         score_ok = score >= buy_cfg["min_signal_score"]
+        if not score_ok and stale_buy_override:
+            score_ok = True
+            buy_reasons.append(
+                f"당일 급등({day_return*100:.1f}%) — 투자자 데이터 미집계로 왜곡된 수급점수 무시"
+            )
         meets_all = score_ok
         rsi_ok = rsi <= buy_cfg["rsi_max"]
         if not rsi_ok:
@@ -268,7 +289,6 @@ class SignalGenerator:
             watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
-        day_return = ind.get("day_return", 0.0)
         volume_ok = vol_ratio >= buy_cfg["volume_min_ratio"] or day_return >= 0.05
         if not volume_ok:
             meets_all = False
@@ -305,7 +325,13 @@ class SignalGenerator:
 
         if score_ok and watch_reasons:
             # 종합점수는 매수선을 넘었는데 RSI/거래량 조건에 막힌 근접 사례 — 조용히 묻지 않고 알림 (2026-08-21)
-            return SignalType.WATCH, f"매수선 통과(점수 {score:.3f})했으나 " + ", ".join(watch_reasons)
+            # stale_buy_override로 score_ok가 된 경우 실제 점수는 매수선 미달이므로 문구 구분 (2026-08-24)
+            score_basis = (
+                f"당일 급등({day_return*100:.1f}%, 수급점수 미집계 무시)"
+                if stale_buy_override and score < buy_cfg["min_signal_score"]
+                else f"매수선 통과(점수 {score:.3f})"
+            )
+            return SignalType.WATCH, f"{score_basis}했으나 " + ", ".join(watch_reasons)
 
         return SignalType.HOLD, "매매 조건 미충족"
 

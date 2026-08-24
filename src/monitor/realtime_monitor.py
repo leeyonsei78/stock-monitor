@@ -163,12 +163,16 @@ class RealtimeMonitor:
         elif signal.signal_type == SignalType.WATCH:
             # 종합점수는 매수선을 넘었지만 RSI/거래량 조건 미충족 — 매수가는 참고용으로만 보여줌 (2026-08-21)
             return {
-                "action":     "관심",
-                "buy_price":  price,
-                "sell_price": None,
-                "qty":        None,
-                "target":     None,
-                "stop_loss":  None,
+                "action":       "관심",
+                "buy_price":    price,
+                "sell_price":   None,
+                "qty":          None,
+                "target":       None,
+                "stop_loss":    None,
+                # signal.reason에 "매수선 통과했으나 RSI 과열(...), 거래량 부족(...)" 형태로 구체 사유가
+                # 이미 들어있음 — 추천 액션 블록에 그대로 노출 (2026-08-24, 이전엔 "아래 미충족 사유"라고만
+                # 적어놓고 실제 사유는 별도 섹션에 있어 확인이 안 된다는 지적으로 발견)
+                "unmet_reason": signal.reason,
             }
         else:
             return {
@@ -297,8 +301,10 @@ class RealtimeMonitor:
         change_pct = current_info.get("change_pct", 0)
         change_sign = "+" if change_pct >= 0 else ""
         ah_badge = "  ⏰ _시간외_" if is_after_hours else ""
+        market_name = current_info.get("market_name", "")
+        market_tag = f" · {market_name}" if market_name else ""
         header = (
-            f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker})*{ah_badge}\n"
+            f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker}{market_tag})*{ah_badge}\n"
             f"현재가: *{signal.current_price:,}원*  (전일比 {change_sign}{change_pct:.2f}%)"
             f"  |  신호점수: *{signal.score:+.3f}*"
         )
@@ -432,7 +438,8 @@ class RealtimeMonitor:
             )
         elif rec.get("action") == "관심":
             rec_lines.append(f"• 현재가: *{rec['buy_price']:,}원* — 매수 조건 일부 미충족으로 신규 매수는 보류")
-            rec_lines.append("• 아래 미충족 사유 해소되면 매수 후보로 전환")
+            rec_lines.append(f"• 미충족 사유: {rec.get('unmet_reason') or signal.reason}")
+            rec_lines.append("• 사유 해소되면 매수 후보로 전환")
         else:
             rec_lines.append(f"• 기준가: *{rec['sell_price']:,}원*")
             rec_lines.append(f"• 보유 중이면 매도 고려  |  미보유 시 신규 매수 금지")

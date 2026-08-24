@@ -153,6 +153,10 @@ class KISApi:
         return {
             "ticker": ticker,
             "name": out.get("hts_kor_isnm", ""),
+            # 대표시장한글명("코스피"/"코스닥"/"코넥스") — 거래량순위 TR(FHPST01710000)은 시장 구분을
+            # 응답에서 못 주지만(위 get_top_volume_stocks 참고) 종목별 현재가 조회는 이미 전 종목에
+            # 대해 호출되므로 여기서 시장 구분을 얻는다 (2026-08-24 추가, Slack 표시용)
+            "market_name": out.get("rprs_mrkt_kor_name", ""),
             "price": int(out.get("stck_prpr", 0)),
             "open": int(out.get("stck_oprc", 0)),
             "high": int(out.get("stck_hgpr", 0)),

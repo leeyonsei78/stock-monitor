@@ -51,6 +51,12 @@ class OrderManager:
         매수 주문
         price=None → 시장가, price=정수 → 지정가
         """
+        if quantity <= 0:
+            # TradeSignal.recommended_qty가 int(budget/price) 절삭으로 0이 될 수 있음
+            # (종목가가 종목당 예산을 초과하는 경우) — 0/음수 수량 주문은 여기서 차단
+            logger.warning(f"매수 수량 0 이하로 주문 무시: {ticker} qty={quantity}")
+            return None
+
         if not self._portfolio.can_buy_more() and not self._portfolio.has_position(ticker):
             logger.warning(f"최대 보유 종목 수 초과로 매수 불가: {ticker}")
             return None

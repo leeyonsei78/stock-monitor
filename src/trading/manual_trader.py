@@ -36,7 +36,7 @@ class ManualTrader:
 
     def _handle_order(
         self, ticker: str, side: str, quantity: int,
-        price: Optional[int], user: str, confirm_msg: str
+        price: Optional[int], user: str,
     ) -> str:
         try:
             # 종목명 조회

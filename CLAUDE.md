@@ -123,6 +123,7 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
   ```
 - [ ] **9단계**: GitHub Actions schedule 비활성화 (workflow_dispatch는 유지)
 - [ ] **10단계**: Slack 명령어 매매 웹훅 서버 구축 (`src/trading/manual_trader.py`)
+  - **2026-08-24 보안 수정**: 원래 `/trade buy|sell|cancel`에 사용자 인증이 전혀 없었고(`user_name`은 로깅에만 사용), "주문 확인" 메시지도 실제로는 확인 없이 명령 즉시 체결되던 죽은 코드였음(`confirm_msg` 파라미터가 콜백에 전달만 되고 미사용) → `SLACK_TRADE_ALLOWED_USERS`(Slack user ID 화이트리스트, 미설정 시 전부 차단) + 확인/취소 버튼(5분 유효, 요청 본인만 클릭 가능) 방식으로 수정 (`src/notification/slack_bot.py`). 활성화 전 `.env`에 `SLACK_TRADE_ALLOWED_USERS` 설정 필수
 
 ---
 
@@ -229,6 +230,7 @@ git push origin main
 - `TradeSignal.stop_loss_pct/take_profit_pct`에 저장 → Slack 추천 액션(`realtime_monitor.py`)과 `to_slack_message()`에 반영
 - **자동매매 연동 지점**: `Portfolio.Position.stop_loss_pct/take_profit_pct`에 매수 시점 값을 저장(`add_position()` 파라미터) → `check_stop_loss/check_take_profit`가 종목별 값 사용. `OrderManager.buy()` → `AutoTrader._run_signal_scan()`까지 이미 배선 완료 (현재 `trading.mode: "manual"`이라 미실행 상태, 모드 전환 시 바로 동작)
   - 보유 중 신호 재계산 시에도 `SignalGenerator.generate(position_stop_loss_pct=, position_take_profit_pct=)`로 매수 당시 기준을 그대로 사용 (전역 고정값 아님)
+  - **2026-08-24 버그 수정**: `TradeSignal.recommended_qty = int(budget/current_price)`에 최소 수량 보정이 없어 종목가가 종목당 예산(`max_budget_per_stock`, STRONG_BUY는 ×1.5)을 초과하면 0으로 계산되고, `AutoTrader._run_signal_scan()`이 이를 그대로 `OrderManager.buy(quantity=0, ...)`에 넘기던 문제 발견 → `OrderManager.buy()`에 `quantity<=0` 가드 추가로 차단 (현재 워치리스트·스크리닝 가격대에선 실제로 안 터졌지만 모드 전환/워치리스트 변경 시 재현 가능했음)
 
 ## 투자자 수급 가중치 (2026-08-21 재조정)
 | 투자자 | 가중치 | 비고 |
@@ -349,6 +351,11 @@ KIS_IS_MOCK=true          # 모의투자: true / 실전: false
 
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_CHANNEL_ID=C...
+
+# /trade 슬랙 명령어 매매 (manual_trader.py — VM 이전 후 활성화 예정, 현재 미사용)
+SLACK_SIGNING_SECRET=...
+SLACK_APP_TOKEN=xapp-...
+SLACK_TRADE_ALLOWED_USERS=U012345,U067890   # 매수/매도/취소 허용 Slack user ID(콤마 구분) — 미설정 시 전부 차단
 
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_KEY=sb_secret_...

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src.api.kis_api import KISApi
 from src.analysis.signal_generator import SignalGenerator, SignalType, TradeSignal
 from src.notification.slack_bot import SlackNotifier
+from src.monitor.virtual_trader import VirtualTrader
 from src.utils.logger import setup_logger
 
 logger = setup_logger("monitor")
@@ -72,6 +73,8 @@ class RealtimeMonitor:
         self._api      = KISApi(store=store)
         self._signal   = SignalGenerator()
         self._notifier = SlackNotifier()
+        # 가상매매(paper trading) 추적 — store 없으면(Supabase 미설정) 내부적으로 전부 no-op (2026-08-24)
+        self._virtual  = VirtualTrader(self._api, store, self._notifier)
 
         # watchlist 종목별 시장 코드 (기본값 "J"=코스피, 코스닥은 "Q")
         # config.yaml에 키만 있고 값이 비어있으면 YAML이 None으로 파싱해 .get()의 기본값이
@@ -497,6 +500,10 @@ class RealtimeMonitor:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
             return None
 
+        # 가상매매 진입 기록 — 쿨다운으로 실제 Slack 알림이 스킵되더라도 "최초 발견 시점" 기준으로
+        # 열려야 하므로 HOLD 조기 반환 이전에 호출 (BUY/STRONG_BUY/WATCH 외엔 내부에서 no-op) (2026-08-24)
+        self._virtual.open_if_new(signal)
+
         if signal.signal_type == SignalType.HOLD:
             return signal
 
@@ -617,6 +624,7 @@ class RealtimeMonitor:
         skipped    = 0
         errors     = 0
         processed  = 0
+        scan_signals: dict[str, TradeSignal] = {}  # 가상매매 청산 체크에서 재사용 (2026-08-24)
 
         for i, stock in enumerate(stocks):
             elapsed = time.time() - scan_start
@@ -632,6 +640,7 @@ class RealtimeMonitor:
                 if sig is None:
                     skipped += 1
                 else:
+                    scan_signals[stock["ticker"]] = sig
                     if sig.signal_type in (SignalType.BUY, SignalType.STRONG_BUY):
                         buy_count += 1
                     elif sig.signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
@@ -643,6 +652,11 @@ class RealtimeMonitor:
                 logger.error(f"[{stock['ticker']}] 분석 중 예외: {e}")
                 errors += 1
             processed = i + 1
+
+        try:
+            self._virtual.check_open_positions(scan_signals)
+        except Exception as e:
+            logger.error(f"가상매매 청산 체크 실패: {e}")
 
         elapsed_total = time.time() - scan_start
         logger.info(

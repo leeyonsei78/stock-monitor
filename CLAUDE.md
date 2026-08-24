@@ -248,6 +248,7 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
 ## Slack 알림 구성
 매수/매도 신호 발생 시 아래 항목을 포함한 메시지 전송:
 1. **헤더**: 신호 종류, 종목명, 현재가, 전일비, 신호점수 / 시간외 시 ⏰ 배지
+   - **코스피/코스닥 표시** (2026-08-24 추가): 종목명 옆에 "(티커 · 코스피)" 형태로 시장 표시. `get_current_price`의 `rprs_mrkt_kor_name` 필드 사용 — 이름과 달리 "코스피"/"코스닥"이 아니라 `KOSPI200`/`KSQ150`(코스닥150)/`KOSPI`/`KOSDAQ`/`ETF` 같은 소속 지수·상품군 영문값이 옴 (2026-08-24 실측: 005930→KOSPI200, 041190→KSQ150, 001210→KOSPI, 064260→KOSDAQ, ETF는 ETF) → `KISApi._normalize_market_name()`에서 코스피/코스닥으로 정규화(ETF 등은 원문 유지). 필드가 비면 배지 자체를 생략
 2. **거래량**: 현재 거래량, 평균 대비 배율
 3. **투자자 동향**: 외국인/기관/프로그램/개인 순매수량, 연속 매수·매도 추세
 4. **기술적 지표**: RSI, MACD, 볼린저밴드, 이평선 정배열 여부
@@ -271,6 +272,7 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
 
 ## KIS API 안정성
 - 액세스 토큰 Supabase 캐싱 (`stock_kis_token_cache`): 실행 간 재사용, 신규 발급 최소화
+- **토큰 발급 단기 레이트리밋 (2026-08-24 실측)**: "1일 1회" 제한과 별개로, 직전 발급 후 짧은 시간(대략 1분 이내) 안에 새로 발급 시도하면 `403 Forbidden`(`/oauth2/tokenP`) 발생. Supabase 캐시를 안 쓰는 `KISApi(store=None)`(로컬 검증 스크립트 등)를 짧은 간격으로 여러 번 새로 띄우면 재현됨 — 운영 코드는 항상 `store=` 캐시를 쓰므로 영향 없음, 로컬에서 임시 스크립트로 검증할 땐 KISApi 인스턴스를 재사용하거나 발급 간격을 두어야 함
 - `ConnectionError` / `Timeout` 발생 시 3회 자동 재시도 (3초·6초 간격)
 - 모든 API 요청 timeout 10초
 
@@ -318,6 +320,7 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
 - `stock_signal_log`: 알림 쿨다운 관리 + 신호 성과 추적 (2026-08-21 컬럼 추가: `price_after_1d`, `return_1d_pct`, `price_after_3d`, `return_3d_pct`)
 - `stock_price_snapshot`: 종목별 직전 가격 저장 (5분 변화율 계산용)
 - `stock_kis_token_cache`: KIS 액세스 토큰 캐싱 (id=1 단일 행, RLS 비활성화 필요)
+- `stock_virtual_position`: 가상매매(paper trading) 추적 (2026-08-24 추가, 아래 참고). RLS 비활성화 필요
 
 ## 신호 성과 추적 (2026-08-21 추가)
 매수/매도 알림이 실제로 맞았는지 자동 검증하는 기능. 8/20 코스피 폭등일(+5.89%) 실데이터 분석 중
@@ -346,6 +349,43 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
   - **리포트만 자동화, 가중치 변경은 자동 반영 안 함** — 상관계수가 대체로 0.03 이하로 작아 노이즈와 실제 신호를 구분하려면 사람이 매 분기 리포트를 검토해서 수동으로 `signal_weights`에 반영해야 함
   - 투자자 수급(30%)은 KIS API 제약(최근 30거래일만 제공)으로 이 백테스트 대상에서 제외 — 위 주간/신호 성과 추적으로 실시간 검증
   - 2026-08-21 1차 결과로 `signal_weights` 재조정 완료 (아래 표 참고): MACD·거래량 역상관 확인돼 축소, 볼린저·상대강도 정상관 확인돼 확대
+
+## 가상매매(paper trading) 추적 (2026-08-24 추가)
+매수/관심(WATCH) 신호가 뜨면 "지금 샀다고 가정"하고 목표가/손절가/반대신호 도달까지 계속 추적해서
+청산 결과(시점·가격·보유일수·수익률)를 Slack으로 알림. 향후 자동매매(`trading.mode: auto`) 전환을
+염두에 두고, 신호만이 아니라 "진입+리스크관리 전체 패키지"가 실제로 수익이 나는지 검증하고 그
+결과로 ATR 배수(`config.yaml risk.atr_stop_multiplier`/`atr_target_multiplier`)를 데이터 기반으로
+정교화하기 위해 도입.
+- **위 신호 성과 추적(`evaluate_signals.py`, 1일/3일 단순 가격 스냅샷)과는 별개로 병행** — 그건
+  "신호 방향이 맞았나"(순수 신호 품질)를 재고, 이건 "목표가/손절가/수량까지 포함한 실제 거래 계획이
+  돈을 벌었나"(리스크관리 포함 전체 결과)를 잼. 둘을 같이 봐야 "신호는 맞는데 손절선이 잘못됐다"와
+  "신호 자체가 틀렸다"를 구분할 수 있음
+- **모듈**: `src/monitor/virtual_trader.py` `VirtualTrader` — `RealtimeMonitor`가 `_analyze_stock()`
+  직후(`open_if_new`) 진입 기록, `_scan_once()` 매 스캔 끝에(`check_open_positions`) 청산 체크
+- **진입**: BUY/STRONG_BUY, 또는 관심(WATCH, `config.yaml virtual_trading.include_watch`)일 때 —
+  WATCH도 `SignalGenerator._calc_dynamic_risk()`가 모든 signal_type에 대해 이미 목표가/손절가를
+  계산해두므로 별도 계산 불필요. 같은 종목에 이미 열린 포지션이 있으면 스킵(중복 진입 방지) —
+  알림 쿨다운과 무관하게 "최초 발견 시점" 기준으로 열려야 하므로 쿨다운 체크보다 먼저 호출됨
+- **청산 조건** (먼저 만족하는 순서: 손절 > 목표 > 반대신호 > 타임아웃):
+  1. `stop_hit`: 현재가가 손절가 이하
+  2. `target_hit`: 현재가가 목표가 이상
+  3. `reversal_sell`: 보유 중 해당 종목에 SELL/STRONG_SELL 신호 발생 (그 스캔에서 종목이 재조회된 경우만 감지 가능 — top-N에서 빠지면 다음 스캔까지 못 볼 수 있음)
+  4. `timeout`: `config.yaml virtual_trading.max_hold_days`(기본 10거래일) 경과 — 목표/손절 둘 다 안 닿고 타임아웃되는 비율 자체가 "ATR 배수가 실제 변동성 대비 너무 넓다"는 진단 지표가 됨
+- **Supabase 테이블**: `stock_virtual_position` (수동 SQL 생성 필요)
+  ```sql
+  create table stock_virtual_position (
+    id bigserial primary key,
+    ticker text not null, name text, signal_type text not null,
+    entry_price int not null, entry_at timestamptz not null default now(), qty int not null,
+    target_price int not null, stop_price int not null, target_pct numeric, stop_pct numeric,
+    status text not null default 'open',
+    exit_price int, exit_at timestamptz, exit_reason text, return_pct numeric, hold_days int
+  );
+  create index on stock_virtual_position (ticker, status);
+  create index on stock_virtual_position (status);
+  alter table stock_virtual_position disable row level security;
+  ```
+- **후속 예정(미구현)**: 데이터 쌓이면 `weekly_accuracy_report.py`에 target_hit/stop_hit/reversal_sell/timeout 비율·평균 수익률·평균 보유일수 섹션 추가해 ATR 배수 튜닝 근거로 사용
 
 ---
 
@@ -392,7 +432,8 @@ C:\test_stock_auto\
     ├── monitor/
     │   ├── realtime_monitor.py       # 실시간 모니터 핵심 + Slack 메시지 포맷
     │   │                             # ETF_EXCLUDE_KEYWORDS: 레버리지·인버스·해외지수 ETF 제외 (2026-08-11)
-    │   └── supabase_store.py         # 쿨다운 DB + 가격 스냅샷 + 토큰 캐시
+    │   ├── virtual_trader.py         # 가상매매(paper trading) 추적 (2026-08-24)
+    │   └── supabase_store.py         # 쿨다운 DB + 가격 스냅샷 + 토큰 캐시 + 가상매매 CRUD
     ├── notification/slack_bot.py     # Slack 알림
     └── trading/
         ├── order_manager.py          # 주문 실행

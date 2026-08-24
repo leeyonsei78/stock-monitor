@@ -133,6 +133,88 @@ class SupabaseSignalStore:
         except Exception as e:
             logger.error(f"신호 평가 결과 저장 실패 [id={row_id}]: {e}")
 
+    # ── 가상매매(paper trading) 추적 (2026-08-24 추가) ─────────────
+    # 매수/관심 신호를 "지금 샀다고 가정"하고 목표가/손절가/반대신호 도달까지 추적하는
+    # stock_virtual_position 테이블 CRUD. evaluate_signals.py의 1일/3일 스냅샷 평가와는
+    # 별개 — 이건 리스크관리(목표/손절 설정)까지 포함한 실제 거래 결과를 검증하기 위함.
+    def get_open_virtual_position(self, ticker: str) -> Optional[dict]:
+        """이미 열린 가상 포지션이 있는지 확인 (중복 진입 방지)"""
+        try:
+            result = (
+                self._client.table("stock_virtual_position")
+                .select("id")
+                .eq("ticker", ticker)
+                .eq("status", "open")
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"가상 포지션 조회 실패 [{ticker}]: {e}")
+            return None  # 오류 시 중복 방지 우선 — 새로 열지 않고 다음 스캔에 재시도
+
+    def open_virtual_position(
+        self,
+        ticker: str,
+        name: str,
+        signal_type: str,
+        entry_price: int,
+        qty: int,
+        target_price: int,
+        stop_price: int,
+        target_pct: float,
+        stop_pct: float,
+    ) -> Optional[int]:
+        try:
+            result = (
+                self._client.table("stock_virtual_position")
+                .insert({
+                    "ticker": ticker,
+                    "name": name,
+                    "signal_type": signal_type,
+                    "entry_price": entry_price,
+                    "qty": qty,
+                    "target_price": target_price,
+                    "stop_price": stop_price,
+                    "target_pct": target_pct,
+                    "stop_pct": stop_pct,
+                })
+                .execute()
+            )
+            return result.data[0]["id"] if result.data else None
+        except Exception as e:
+            logger.error(f"가상 포지션 진입 저장 실패 [{ticker}]: {e}")
+            return None
+
+    def get_all_open_virtual_positions(self) -> list[dict]:
+        try:
+            result = (
+                self._client.table("stock_virtual_position")
+                .select("*")
+                .eq("status", "open")
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"오픈 가상 포지션 목록 조회 실패: {e}")
+            return []
+
+    def close_virtual_position(
+        self, row_id: int, exit_price: int, exit_reason: str,
+        return_pct: float, hold_days: int,
+    ):
+        try:
+            self._client.table("stock_virtual_position").update({
+                "status": "closed",
+                "exit_price": exit_price,
+                "exit_at": datetime.now(timezone.utc).isoformat(),
+                "exit_reason": exit_reason,
+                "return_pct": return_pct,
+                "hold_days": hold_days,
+            }).eq("id", row_id).execute()
+        except Exception as e:
+            logger.error(f"가상 포지션 청산 저장 실패 [id={row_id}]: {e}")
+
     # ── KIS 토큰 캐싱 (30분마다 재발급 방지) ──────────────────────
     def save_access_token(self, token: str, expires_at: datetime):
         """KIS 액세스 토큰 Supabase에 저장 (실행 간 재사용)"""

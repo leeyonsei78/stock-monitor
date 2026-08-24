@@ -77,10 +77,12 @@ class VirtualTrader:
         if self._store.get_open_virtual_position(signal.ticker):
             return  # 이미 추적 중
 
+        # qty는 표시·수익률 계산용 참고치일 뿐 실제 주문이 아니라서(수익률 %는 qty와 무관) 예산
+        # 초과 시 OrderManager.buy()처럼 스킵하지 않고 최소 1주로 floor — 그렇게 안 하면 가격이
+        # 예산(max_budget_per_stock)을 넘는 종목(예: 000660 SK하이닉스)이 워치리스트에 있어도
+        # 영원히 가상매매 추적 대상에서 빠지는 공백이 생김 (2026-08-24 실측 발견)
         budget = self._budget * 1.5 if signal.signal_type == SignalType.STRONG_BUY else self._budget
-        qty = int(budget / signal.current_price)
-        if qty <= 0:
-            return  # 종목가가 예산 초과 — OrderManager.buy()의 quantity<=0 가드와 동일 원칙
+        qty = max(1, int(budget / signal.current_price))
 
         target_price = int(signal.current_price * (1 + signal.take_profit_pct / 100))
         stop_price = int(signal.current_price * (1 + signal.stop_loss_pct / 100))

@@ -3,9 +3,13 @@
 REST API (토큰 발급, 주가 조회, 주문, 잔고 등)
 """
 import os
+import io
+import ssl
 import json
 import time
 import hashlib
+import zipfile
+import urllib.request
 import requests
 from requests.exceptions import ConnectionError as ReqConnError, Timeout as ReqTimeout
 from datetime import datetime, timedelta, timezone
@@ -223,6 +227,63 @@ class KISApi:
         return {
             "value": float(out.get("bstp_nmix_prpr", 0) or 0),
             "change_pct": float(out.get("bstp_nmix_prdy_ctrt", 0) or 0),
+        }
+
+    def _get_kospi200_futures_front_code(self) -> str:
+        """코스피200 지수선물 근월물 단축코드를 KIS 마스터 코드파일(fo_idx_code_mts.mst)에서
+        동적으로 찾음 — 분기(3/6/9/12월)마다 만기가 바뀌어 코드가 고정이 아님 (2026-08-24 추가).
+        매번 재다운로드(~660KB, 토큰 불필요한 순수 HTTP)해서 수동 갱신 없이 항상 최신 근월물 사용.
+        파일 컬럼(9개, | 구분): 상품종류/단축코드/표준코드/한글종목명/ATM구분/행사가/
+        월물구분코드/기초자산단축코드/기초자산명 — 기초자산명="KOSPI200"이고 한글종목명이 "F"로
+        시작(옵션 아닌 선물)하는 행 중 월물구분코드가 가장 작은(최근월) 걸 선택
+        """
+        ctx = ssl._create_unverified_context()
+        req = urllib.request.Request(
+            "https://new.real.download.dws.co.kr/common/master/fo_idx_code_mts.mst.zip"
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            zdata = resp.read()
+        with zipfile.ZipFile(io.BytesIO(zdata)) as zf:
+            raw = zf.read("fo_idx_code_mts.mst").decode("cp949")
+
+        front_code, front_month_num = None, None
+        for line in raw.splitlines():
+            parts = line.split("|")
+            if len(parts) < 9:
+                continue
+            short_code, name, month_code, underlying = parts[1], parts[3].strip(), parts[6].strip(), parts[8].strip()
+            if underlying != "KOSPI200" or not name.startswith("F"):
+                continue
+            try:
+                mnum = int(month_code)
+            except ValueError:
+                continue
+            if front_month_num is None or mnum < front_month_num:
+                front_month_num, front_code = mnum, short_code
+
+        if not front_code:
+            raise RuntimeError("코스피200 선물 근월물 코드를 마스터파일에서 찾지 못함")
+        return front_code
+
+    def get_kospi200_futures(self) -> dict:
+        """코스피200 지수선물 근월물 현재가 조회 (2026-08-24 추가)
+        시장 레짐 참고용(베이시스: 선물이 현물 대비 프리미엄/디스카운트 상태인지) — 아직 신호
+        점수엔 반영하지 않고 정보성 표시 + DB 기록만 함(VKOSPI와 동일 원칙)
+        """
+        front_code = self._get_kospi200_futures_front_code()
+        data = self._get(
+            "/uapi/domestic-futureoption/v1/quotations/inquire-price",
+            "FHMIF10000000",
+            {"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": front_code},
+            base=self._quote_url,
+        )
+        out = data.get("output1", {})
+        return {
+            "contract": out.get("hts_kor_isnm", front_code).strip(),
+            "price": float(out.get("futs_prpr", 0) or 0),
+            "change_pct": float(out.get("futs_prdy_ctrt", 0) or 0),
+            "basis": float(out.get("basis", 0) or 0),
+            "days_to_expiry": int(out.get("hts_rmnn_dynu", 0) or 0),
         }
 
     def get_minute_ohlcv(self, ticker: str, interval: int = 1, market: str = "J") -> list[dict]:

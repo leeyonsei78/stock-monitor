@@ -37,6 +37,10 @@ class SupabaseSignalStore:
             logger.error(f"Supabase 쿨다운 조회 실패 [{ticker}]: {e}")
             return True  # 오류 시 알림 허용
 
+    # 최근 추가된 컬럼 — 마이그레이션 전이면 insert가 실패할 수 있어 save_signal()에서
+    # 폴백 대상으로 취급 (2026-08-24)
+    _OPTIONAL_SIGNAL_COLUMNS = ("vkospi", "futures_basis")
+
     def save_signal(
         self,
         ticker: str,
@@ -46,31 +50,35 @@ class SupabaseSignalStore:
         expected_return_pct: Optional[float] = None,
         reason: Optional[str] = None,
         vkospi: Optional[float] = None,
+        futures_basis: Optional[float] = None,
     ):
+        row = {
+            "ticker": ticker,
+            "signal_type": signal_type,
+            "score": score,
+            "current_price": price,
+        }
+        if expected_return_pct is not None:
+            row["expected_return_pct"] = expected_return_pct
+        if reason is not None:
+            row["reason"] = reason[:500]  # 컬럼 길이 방어
+        # 신호 발생 시점 VKOSPI/선물 베이시스 — 시장 레짐 참고용, 아직 점수엔 미반영 (2026-08-24 추가)
+        # 데이터 쌓이면 예측 오차(evaluate_signals.py)와의 상관관계로 반영 여부 판단 예정
+        if vkospi is not None:
+            row["vkospi"] = vkospi
+        if futures_basis is not None:
+            row["futures_basis"] = futures_basis
+
         try:
-            row = {
-                "ticker": ticker,
-                "signal_type": signal_type,
-                "score": score,
-                "current_price": price,
-            }
-            if expected_return_pct is not None:
-                row["expected_return_pct"] = expected_return_pct
-            if reason is not None:
-                row["reason"] = reason[:500]  # 컬럼 길이 방어
-            # 신호 발생 시점 VKOSPI — 시장 레짐 참고용, 아직 점수엔 미반영 (2026-08-24 추가)
-            # 데이터 쌓이면 예측 오차(evaluate_signals.py)와의 상관관계로 반영 여부 판단 예정
-            if vkospi is not None:
-                row["vkospi"] = vkospi
             self._client.table("stock_signal_log").insert(row).execute()
         except Exception as e:
-            # vkospi 컬럼이 아직 마이그레이션 안 됐을 수 있음 — 이걸로 신호 로깅(쿨다운의 근간) 전체가
-            # 막히면 안 되므로 그 필드만 빼고 재시도 (2026-08-24 추가, expected_return_pct는 이미
-            # 운영 중인 컬럼이라 이 폴백 대상에서 제외)
-            if "vkospi" in row:
-                logger.warning(f"[{ticker}] vkospi 포함 저장 실패({e}) — 필드 제외하고 재시도 (컬럼 마이그레이션 필요할 수 있음)")
+            # 위 컬럼들이 아직 마이그레이션 안 됐을 수 있음 — 이걸로 신호 로깅(쿨다운의 근간) 전체가
+            # 막히면 안 되므로 그 필드들만 빼고 재시도 (expected_return_pct는 이미 운영 중인
+            # 컬럼이라 이 폴백 대상에서 제외)
+            stripped = [c for c in self._OPTIONAL_SIGNAL_COLUMNS if row.pop(c, None) is not None]
+            if stripped:
+                logger.warning(f"[{ticker}] {stripped} 포함 저장 실패({e}) — 제외하고 재시도 (컬럼 마이그레이션 필요할 수 있음)")
                 try:
-                    del row["vkospi"]
                     self._client.table("stock_signal_log").insert(row).execute()
                     return
                 except Exception as e2:

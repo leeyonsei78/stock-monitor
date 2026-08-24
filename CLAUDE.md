@@ -278,6 +278,15 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
      alter table stock_signal_log add column vkospi numeric;
      ```
      `save_signal()`이 이 컬럼 없이도 나머지 필드는 정상 저장되도록 폴백 처리해뒀지만(컬럼 없으면 vkospi만 빼고 재시도), 마이그레이션은 그래도 실행 권장 — 안 하면 VKOSPI 데이터가 안 쌓임
+   - **코스피200 지수선물 근월물 표시** (2026-08-24 추가): VKOSPI 다음 줄에 "📐 코스피200 선물(F 202609) 1051.65 (-4.4%) 베이시스 +1.42(콘탱고)" 형태로 표시. `KISApi.get_kospi200_futures()`(TR `FHMIF10000000`, 엔드포인트 `/uapi/domestic-futureoption/v1/quotations/inquire-price`, `FID_COND_MRKT_DIV_CODE="F"`)로 스캔당 1회 조회
+     - **근월물 계약코드는 고정이 아니라 분기(3/6/9/12월)마다 바뀜** — `KISApi._get_kospi200_futures_front_code()`가 매번 KIS 선물옵션 마스터 코드파일(`fo_idx_code_mts.mst`, 토큰 불필요한 순수 HTTP 다운로드)을 새로 받아 기초자산="KOSPI200"·한글종목명이 "F"로 시작(옵션 아닌 선물)하는 행 중 월물구분코드가 가장 작은(최근월) 계약을 동적으로 선택 — 수동 갱신 불필요. 실측(2026-08-24): 근월물 `A01609`("F 202609", 2026년 9월물), 만기까지 18일
+     - **베이시스**(선물가-현물가 스프레드, 응답 필드 `basis`)가 핵심 — 콘탱고(양수, 선물>현물)는 일반적/중립, 백워데이션(음수, 선물<현물)은 시장 스트레스·수급 불안 신호로 흔히 해석됨
+     - 계좌 접근 권한 실측 확인됨(선물옵션 시세 조회에 별도 제약 없었음) — 이 계좌가 지금까지 주식 시세·주문만 써왔던 것과 무관하게 정상 동작
+     - VKOSPI와 동일 원칙: **아직 신호 점수엔 미반영**, 정보성 표시 + `stock_signal_log.futures_basis` 컬럼 기록만 함
+     ```sql
+     alter table stock_signal_log add column futures_basis numeric;
+     ```
+     `save_signal()`의 폴백이 vkospi/futures_basis 둘 다 커버함(어느 쪽이 안 됐든 그 필드들만 빼고 재시도)
 2. **거래량**: 현재 거래량, 평균 대비 배율
 3. **투자자 동향**: 외국인/기관/프로그램/개인 순매수량, 연속 매수·매도 추세
 4. **기술적 지표**: RSI, MACD, 볼린저밴드, 이평선 정배열 여부

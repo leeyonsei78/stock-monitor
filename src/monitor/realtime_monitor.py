@@ -114,6 +114,8 @@ class RealtimeMonitor:
         self._index_ohlcv: Optional[list[dict]] = None
         # VKOSPI(변동성지수) — 시장 레짐 참고용, _scan_once()에서 스캔당 1회 갱신 (2026-08-24 추가)
         self._vkospi: Optional[dict] = None
+        # 코스피200 지수선물 근월물 — 베이시스 참고용, _scan_once()에서 스캔당 1회 갱신 (2026-08-24 추가)
+        self._futures: Optional[dict] = None
 
     # ── 시장 시간 판단 ────────────────────────────────────────────
     @staticmethod
@@ -159,8 +161,10 @@ class RealtimeMonitor:
     ):
         if self._store:
             vkospi_value = self._vkospi["value"] if self._vkospi else None
+            futures_basis = self._futures["basis"] if self._futures else None
             self._store.save_signal(
-                ticker, signal_type.value, score, price, expected_return_pct, reason, vkospi_value
+                ticker, signal_type.value, score, price, expected_return_pct, reason,
+                vkospi_value, futures_basis,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
@@ -341,6 +345,13 @@ class RealtimeMonitor:
         if self._vkospi:
             vk = self._vkospi
             header += f"\n{VKOSPI_REGIME_EMOJI(vk['value'])} VKOSPI {vk['value']:.1f} ({vk['change_pct']:+.1f}%, {vkospi_regime_label(vk['value'])})"
+        if self._futures:
+            fut = self._futures
+            basis_label = "콘탱고" if fut["basis"] >= 0 else "백워데이션"
+            header += (
+                f"\n📐 코스피200 선물({fut['contract']}) {fut['price']:.2f} ({fut['change_pct']:+.1f}%)"
+                f" 베이시스 {fut['basis']:+.2f}({basis_label})"
+            )
 
         # ── 거래량 ──
         vol        = current_info.get("volume", 0)
@@ -616,6 +627,17 @@ class RealtimeMonitor:
         except Exception as e:
             logger.warning(f"VKOSPI 조회 실패: {e}")
             self._vkospi = None
+
+        # 코스피200 지수선물 근월물 — 스캔 1회당 1번만 조회, 베이시스 참고용 (2026-08-24 추가)
+        try:
+            self._futures = self._api.get_kospi200_futures()
+            logger.info(
+                f"코스피200 선물({self._futures['contract']}): {self._futures['price']:.2f} "
+                f"({self._futures['change_pct']:+.2f}%) 베이시스 {self._futures['basis']:+.2f}"
+            )
+        except Exception as e:
+            logger.warning(f"코스피200 선물 조회 실패: {e}")
+            self._futures = None
 
         stocks: list[dict] = []
 

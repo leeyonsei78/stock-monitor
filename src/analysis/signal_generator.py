@@ -35,7 +35,7 @@ class TradeSignal:
     investor_score: float = 0.0
     stop_loss_pct: float = 0.0     # ATR 기반 동적 손절 % (음수) — 자동매매 포지션 리스크 관리용
     take_profit_pct: float = 0.0   # ATR 기반 동적 목표 % (양수)
-    expected_return_pct: float = 0.0   # 예상 변동률(경험적 추정, 방향 포함) — Slack 표시용
+    expected_return_pct: float = 0.0   # 예상 등락률(경험적 추정, 방향 포함) — Slack 표시용
     expected_return_basis: str = ""    # 위 추정치의 산출 근거 설명
     indicators: dict = field(default_factory=dict)
     investor_detail: dict = field(default_factory=dict)
@@ -66,7 +66,7 @@ class TradeSignal:
             f"• {inv.get('current', {}).get('summary', '-')}",
             f"• {inv.get('history', {}).get('trend', '-')}",
             f"",
-            f"*예상 변동률:* {self.expected_return_pct:+.1f}%",
+            f"*예상 등락률:* {self.expected_return_pct:+.1f}%",
             f"_({self.expected_return_basis})_",
             f"",
             f"*판단 근거:* {self.reason}",
@@ -189,7 +189,9 @@ class SignalGenerator:
     def _calc_expected_return(
         self, atr_pct: Optional[float], score: float, signal_type: SignalType
     ) -> tuple[float, str]:
-        """예상 변동률(경험적 추정) 산출 — 통계 검증된 예측이 아니라 참고용 어림값.
+        """예상 등락률(경험적 추정) 산출 — 통계 검증된 예측이 아니라 참고용 어림값.
+        (2026-08-24: "예상 변동률"이 변동성 범위로 오해되기 쉬워 "예상 등락률"로 표기 변경 —
+        이 값은 ±범위가 아니라 방향+크기가 결합된 단일 점 추정치)
         방향은 signal_type 기준(BUY/STRONG_BUY/WATCH=상승, SELL/STRONG_SELL=하락), 크기는 최근
         14일 변동성(ATR)에 신호강도(|점수|)를 곱해 결정. 신호가 강할수록(0.75=강한매수/매도 기준)
         ATR의 최대 1.5배, 약할수록 최소 0.5배로 스케일.

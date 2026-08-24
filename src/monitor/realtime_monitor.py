@@ -420,9 +420,9 @@ class RealtimeMonitor:
                 f"{op}"
             )
 
-        # ── 예상 변동률 (경험적 추정, 실측 데이터 검증 전 참고치) ──
+        # ── 예상 등락률 (경험적 추정, 실측 데이터 검증 전 참고치) ──
         prediction_block = (
-            f"🔮 *예상 변동률: {signal.expected_return_pct:+.1f}%*\n"
+            f"🔮 *예상 등락률: {signal.expected_return_pct:+.1f}%*\n"
             f"_{signal.expected_return_basis}_"
         )
 

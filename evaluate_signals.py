@@ -132,7 +132,7 @@ def _send_summary(evaluated_1d: list[dict], evaluated_3d: list[dict]):
             avg = sum(r["return_pct"] for r in group) / len(group)
             lines.append(f"  {name} {len(group)}건 — 적중 {hits}/{len(group)} | 평균 {avg:+.2f}%")
 
-        # 예상 변동률(ATR×신호강도 경험적 추정) 정확도 — 실제 수익률과 비교
+        # 예상 등락률(ATR×신호강도 경험적 추정) 정확도 — 실제 수익률과 비교
         pred_rows = [r for r in rows if r.get("expected_return_pct") is not None]
         if pred_rows:
             errors = [abs(r["return_pct"] - r["expected_return_pct"]) for r in pred_rows]
@@ -142,7 +142,7 @@ def _send_summary(evaluated_1d: list[dict], evaluated_3d: list[dict]):
                 if (r["return_pct"] >= 0) == (r["expected_return_pct"] >= 0)
             )
             lines.append(
-                f"  🔮 예상변동률 정확도 ({len(pred_rows)}건) — "
+                f"  🔮 예상등락률 정확도 ({len(pred_rows)}건) — "
                 f"방향적중 {dir_hits}/{len(pred_rows)} | 평균오차(MAE) {mae:.2f}%p"
             )
         return "\n".join(lines)

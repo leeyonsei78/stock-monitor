@@ -7,8 +7,10 @@ aiohttp>=3.11.0
 numpy>=2.2.6
 pandas>=2.3.2
 
-# 기술적 분석
-pandas-ta>=0.4.71b0
+# 기술적 분석: RSI/MACD/볼린저/이평선은 pandas .ewm()/.rolling()로 직접 구현
+# (src/analysis/technical_indicators.py) — pandas-ta 등 별도 TA 라이브러리 불필요.
+# 예전에 pandas-ta가 있었으나 실제로는 어디서도 import 안 돼 numba/llvmlite만
+# 매 실행(10분 간격)마다 불필요하게 설치되고 있어 제거 (2026-08-24)
 
 # Slack
 slack-bolt>=1.18.0

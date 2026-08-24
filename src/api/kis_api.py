@@ -141,6 +141,21 @@ class KISApi:
         raise last_err
 
     # ── 주가 조회 ────────────────────────────────────────────────
+    @staticmethod
+    def _normalize_market_name(raw: str) -> str:
+        """rprs_mrkt_kor_name 원본은 "코스피"/"코스닥"이 아니라 KOSPI200/KSQ150/KOSPI/KOSDAQ/ETF처럼
+        소속 지수·상품군을 영문으로 반환함 (2026-08-24 실측 확인: 005930→KOSPI200, 041190→KSQ150,
+        001210→KOSPI, 064260→KOSDAQ, 229200(ETF)→ETF) — 코스피/코스닥으로 정규화, 그 외(ETF/ETN 등)는 원문 유지"""
+        if not raw:
+            return ""
+        if "KOSDAQ" in raw or raw.startswith("KSQ"):
+            return "코스닥"
+        if "KOSPI" in raw or raw.startswith("KSP"):
+            return "코스피"
+        if "KONEX" in raw:
+            return "코넥스"
+        return raw
+
     def get_current_price(self, ticker: str, market: str = "J") -> dict:
         """현재가 및 기본 정보 조회"""
         data = self._get(
@@ -153,10 +168,10 @@ class KISApi:
         return {
             "ticker": ticker,
             "name": out.get("hts_kor_isnm", ""),
-            # 대표시장한글명("코스피"/"코스닥"/"코넥스") — 거래량순위 TR(FHPST01710000)은 시장 구분을
-            # 응답에서 못 주지만(위 get_top_volume_stocks 참고) 종목별 현재가 조회는 이미 전 종목에
-            # 대해 호출되므로 여기서 시장 구분을 얻는다 (2026-08-24 추가, Slack 표시용)
-            "market_name": out.get("rprs_mrkt_kor_name", ""),
+            # 거래량순위 TR(FHPST01710000)은 시장 구분을 응답에서 못 주지만(위 get_top_volume_stocks
+            # 참고) 종목별 현재가 조회는 이미 전 종목에 대해 호출되므로 여기서 얻는다 (2026-08-24 추가,
+            # Slack 표시용) — 원본 필드값이 "코스피"가 아니라 KOSPI200 등이라 정규화 필요 (위 참고)
+            "market_name": KISApi._normalize_market_name(out.get("rprs_mrkt_kor_name", "")),
             "price": int(out.get("stck_prpr", 0)),
             "open": int(out.get("stck_oprc", 0)),
             "high": int(out.get("stck_hgpr", 0)),

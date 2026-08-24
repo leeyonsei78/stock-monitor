@@ -205,6 +205,26 @@ class KISApi:
             })
         return result  # fdr은 날짜 오름차순 반환
 
+    def get_vkospi(self) -> dict:
+        """VKOSPI(코스피 변동성지수, 일명 '공포지수') 현재가 조회 (2026-08-24 추가)
+        업종지수 현재지수 API(FHPUP02100000)에 KIS 마스터 코드파일(idxcode.mst)로 실측 확인한
+        코드 "0503" 사용 — FDR은 VKOSPI를 지원 안 하고, KIS 공식 예제 저장소에도 VKOSPI 언급이
+        없어서 마스터파일을 직접 내려받아 코드를 찾음 (0001=코스피, 1001=코스닥, 2001=코스피200과
+        같은 체계). 시장 레짐(패닉/평온) 참고용 — 아직 신호 점수엔 반영하지 않고 정보성 표시 +
+        DB 기록만 함, 데이터 쌓이면 실제 예측 오차와의 상관관계를 보고 반영 여부 판단 예정
+        """
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+            "FHPUP02100000",
+            {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": "0503"},
+            base=self._quote_url,
+        )
+        out = data.get("output", {})
+        return {
+            "value": float(out.get("bstp_nmix_prpr", 0) or 0),
+            "change_pct": float(out.get("bstp_nmix_prdy_ctrt", 0) or 0),
+        }
+
     def get_minute_ohlcv(self, ticker: str, interval: int = 1, market: str = "J") -> list[dict]:
         """분봉 데이터 조회"""
         data = self._get(

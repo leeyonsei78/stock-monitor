@@ -45,6 +45,7 @@ class SupabaseSignalStore:
         price: int,
         expected_return_pct: Optional[float] = None,
         reason: Optional[str] = None,
+        vkospi: Optional[float] = None,
     ):
         try:
             row = {
@@ -57,8 +58,24 @@ class SupabaseSignalStore:
                 row["expected_return_pct"] = expected_return_pct
             if reason is not None:
                 row["reason"] = reason[:500]  # 컬럼 길이 방어
+            # 신호 발생 시점 VKOSPI — 시장 레짐 참고용, 아직 점수엔 미반영 (2026-08-24 추가)
+            # 데이터 쌓이면 예측 오차(evaluate_signals.py)와의 상관관계로 반영 여부 판단 예정
+            if vkospi is not None:
+                row["vkospi"] = vkospi
             self._client.table("stock_signal_log").insert(row).execute()
         except Exception as e:
+            # vkospi 컬럼이 아직 마이그레이션 안 됐을 수 있음 — 이걸로 신호 로깅(쿨다운의 근간) 전체가
+            # 막히면 안 되므로 그 필드만 빼고 재시도 (2026-08-24 추가, expected_return_pct는 이미
+            # 운영 중인 컬럼이라 이 폴백 대상에서 제외)
+            if "vkospi" in row:
+                logger.warning(f"[{ticker}] vkospi 포함 저장 실패({e}) — 필드 제외하고 재시도 (컬럼 마이그레이션 필요할 수 있음)")
+                try:
+                    del row["vkospi"]
+                    self._client.table("stock_signal_log").insert(row).execute()
+                    return
+                except Exception as e2:
+                    logger.error(f"Supabase 신호 저장 실패(재시도 포함) [{ticker}]: {e2}")
+                    return
             logger.error(f"Supabase 신호 저장 실패 [{ticker}]: {e}")
 
     # ── 5분 변화율 추적 ──────────────────────────────────────────

@@ -37,6 +37,28 @@ SIGNAL_EMOJI = {
 
 INVESTOR_ARROW = lambda v: "↑" if v > 0 else ("↓" if v < 0 else "→")
 
+# VKOSPI 레짐 구간 (2026-08-24 추가) — 아직 신호 점수엔 반영 안 함, 정보성 표시 + DB 기록만
+# (데이터 쌓이면 실제 예측 오차와의 상관관계 보고 반영 여부 판단 예정). 구간 경계는 통계적으로
+# 검증된 값이 아니라 일반적인 VKOSPI 해석 관례를 참고한 잠정치
+def vkospi_regime_label(value: float) -> str:
+    if value < 20:
+        return "안정"
+    elif value < 35:
+        return "보통"
+    elif value < 50:
+        return "변동성 확대"
+    return "공포/패닉"
+
+
+def VKOSPI_REGIME_EMOJI(value: float) -> str:
+    if value < 20:
+        return "🟢"
+    elif value < 35:
+        return "🟡"
+    elif value < 50:
+        return "🟠"
+    return "🔴"
+
 # 레버리지·인버스·해외지수 ETF 제외 키워드 (국내 섹터 ETF는 유지)
 ETF_EXCLUDE_KEYWORDS = (
     "레버리지", "인버스", "2X",
@@ -90,6 +112,8 @@ class RealtimeMonitor:
 
         # 지수 대비 상대강도용 벤치마크 데이터 — _scan_once()에서 스캔당 1회 갱신
         self._index_ohlcv: Optional[list[dict]] = None
+        # VKOSPI(변동성지수) — 시장 레짐 참고용, _scan_once()에서 스캔당 1회 갱신 (2026-08-24 추가)
+        self._vkospi: Optional[dict] = None
 
     # ── 시장 시간 판단 ────────────────────────────────────────────
     @staticmethod
@@ -134,7 +158,10 @@ class RealtimeMonitor:
         reason: Optional[str] = None,
     ):
         if self._store:
-            self._store.save_signal(ticker, signal_type.value, score, price, expected_return_pct, reason)
+            vkospi_value = self._vkospi["value"] if self._vkospi else None
+            self._store.save_signal(
+                ticker, signal_type.value, score, price, expected_return_pct, reason, vkospi_value
+            )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
 
@@ -311,6 +338,9 @@ class RealtimeMonitor:
             f"현재가: *{signal.current_price:,}원*  (전일比 {change_sign}{change_pct:.2f}%)"
             f"  |  신호점수: *{signal.score:+.3f}*"
         )
+        if self._vkospi:
+            vk = self._vkospi
+            header += f"\n{VKOSPI_REGIME_EMOJI(vk['value'])} VKOSPI {vk['value']:.1f} ({vk['change_pct']:+.1f}%, {vkospi_regime_label(vk['value'])})"
 
         # ── 거래량 ──
         vol        = current_info.get("volume", 0)
@@ -578,6 +608,14 @@ class RealtimeMonitor:
         except Exception as e:
             logger.warning(f"코스피 지수 데이터 조회 실패 — 상대강도 신호 비활성화: {e}")
             self._index_ohlcv = None
+
+        # VKOSPI(변동성지수) — 스캔 1회당 1번만 조회, 시장 레짐 참고용 (2026-08-24 추가)
+        try:
+            self._vkospi = self._api.get_vkospi()
+            logger.info(f"VKOSPI: {self._vkospi['value']:.2f} ({self._vkospi['change_pct']:+.2f}%)")
+        except Exception as e:
+            logger.warning(f"VKOSPI 조회 실패: {e}")
+            self._vkospi = None
 
         stocks: list[dict] = []
 

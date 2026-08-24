@@ -385,7 +385,9 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
   create index on stock_virtual_position (status);
   alter table stock_virtual_position disable row level security;
   ```
-- **후속 예정(미구현)**: 데이터 쌓이면 `weekly_accuracy_report.py`에 target_hit/stop_hit/reversal_sell/timeout 비율·평균 수익률·평균 보유일수 섹션 추가해 ATR 배수 튜닝 근거로 사용
+- **주간 리포트 연동** (2026-08-24 추가): `weekly_accuracy_report.py`에 "💰 가상매매 청산 결과" 섹션 추가 — `stock_virtual_position`에서 청산 완료(`status='closed'`) 건을 `exit_at` 기준 주 단위로 묶어 target_hit/stop_hit/reversal_sell/timeout 비율·평균 수익률·평균 보유일수 표시
+  - 신호 적중률 섹션(`MIN_ROWS_FOR_REPORT=5`)과 별개 게이트(`VT_MIN_ROWS_FOR_REPORT=5`) — 한쪽 데이터가 부족해도 다른 쪽은 정상 표시됨 (기존엔 신호 적중률 건수가 5건 미만이면 스크립트 전체가 조기 종료돼 이 섹션이 아예 안 나갈 뻔했음, 두 섹션을 독립적으로 만들어 수정)
+  - 이 지표가 쌓이면 timeout 비율(목표/손절폭이 너무 넓은지)을 보고 `config.yaml risk.atr_stop_multiplier`/`atr_target_multiplier` 튜닝 근거로 사용 예정 — 아직 데이터 없어 판단은 보류
 
 ---
 

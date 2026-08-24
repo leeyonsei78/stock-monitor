@@ -215,6 +215,25 @@ class SupabaseSignalStore:
         except Exception as e:
             logger.error(f"가상 포지션 청산 저장 실패 [id={row_id}]: {e}")
 
+    def get_closed_virtual_positions(self, since_iso: str) -> list[dict]:
+        """청산 완료된 가상 포지션 조회 (주간 리포트용)"""
+        try:
+            result = (
+                self._client.table("stock_virtual_position")
+                .select(
+                    "id, ticker, name, signal_type, entry_price, entry_at, "
+                    "exit_price, exit_at, exit_reason, return_pct, hold_days"
+                )
+                .eq("status", "closed")
+                .gte("exit_at", since_iso)
+                .order("exit_at")
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"청산 완료 가상 포지션 조회 실패: {e}")
+            return []
+
     # ── KIS 토큰 캐싱 (30분마다 재발급 방지) ──────────────────────
     def save_access_token(self, token: str, expires_at: datetime):
         """KIS 액세스 토큰 Supabase에 저장 (실행 간 재사용)"""

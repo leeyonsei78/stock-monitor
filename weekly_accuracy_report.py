@@ -6,6 +6,9 @@ stock_signal_log에 쌓인 1일차 평가 완료 신호를 주(월~일) 단위�
 - 오전(09~14시, 당일 투자자 데이터 미집계 구간) 연속매수/매도 신호 발생 빈도
   — 히스토리 버그 수정(2026-08-21) 효과 관찰용, reason 컬럼 필요
 - 주차별 평균 종합점수 — 수급 가중치 재분배(2026-08-21) 이후 점수 분포 변화 관찰용
+- 가상매매(paper trading) 청산 결과 — target_hit/stop_hit/reversal_sell/timeout 비율,
+  평균 수익률·보유일수 (2026-08-24 추가). 위 신호 적중률과는 독립적인 데이터 소스라 별도로
+  최소 건수 게이트를 두고, 신호 적중률 섹션 데이터가 부족해도 이 섹션은 별도로 표시됨
 GitHub Actions에서 매주 금요일 장마감 후 1회 실행 (evaluate_signals.py 이후).
 """
 import os
@@ -32,6 +35,14 @@ WATCH_TYPE = SignalType.WATCH.value  # "관심"
 
 MIN_ROWS_FOR_REPORT = 5  # 이보다 적으면 "데이터 수집 중" 메시지만 전송
 MORNING_LAG_START, MORNING_LAG_END = 9, 14  # 당일 투자자 데이터 미집계 구간(KST)
+
+VT_MIN_ROWS_FOR_REPORT = 5  # 가상매매 청산 결과 최소 건수 (신호 적중률 섹션과 별도 게이트)
+VT_REASON_LABEL = {
+    "target_hit": "익절",
+    "stop_hit": "손절",
+    "reversal_sell": "반대신호청산",
+    "timeout": "타임아웃",
+}
 
 
 def is_hit(signal_type: str, return_pct: float) -> bool:
@@ -87,6 +98,46 @@ def _group_stats(rows: list[dict]) -> list[str]:
     return parts
 
 
+def _vt_stat_line(rows: list[dict]) -> str:
+    """가상매매 청산 결과 요약 한 줄 (주간/누적 공용) — target_hit/stop_hit/reversal_sell/timeout
+    비율이 그대로 ATR 배수(atr_stop_multiplier/atr_target_multiplier) 튜닝 근거가 됨:
+    timeout 비율이 높으면 목표/손절폭이 실제 변동성 대비 너무 넓게 잡혀있다는 뜻"""
+    by_reason: dict[str, int] = defaultdict(int)
+    for r in rows:
+        by_reason[r.get("exit_reason") or "?"] += 1
+    reason_str = " / ".join(
+        f"{VT_REASON_LABEL.get(k, k)} {v}건" for k, v in sorted(by_reason.items(), key=lambda x: -x[1])
+    )
+    avg_return = sum(r["return_pct"] for r in rows) / len(rows)
+    avg_hold = sum(r["hold_days"] for r in rows) / len(rows)
+    return f"{reason_str} | 평균수익률 {avg_return:+.1f}% | 평균보유 {avg_hold:.1f}거래일"
+
+
+def _virtual_trading_section(vt_rows: list[dict]) -> str:
+    """가상매매 청산 결과 섹션 — exit_at 기준 주 단위로 묶음(entry_at이 아님: 포지션이 여러 주에
+    걸쳐 있을 수 있어 "결과가 확정된 시점" 기준이 더 명확함)"""
+    if len(vt_rows) < VT_MIN_ROWS_FOR_REPORT:
+        return (
+            f"💰 *가상매매 청산 결과*: {len(vt_rows)}건 — 데이터 수집 중 "
+            f"(최소 {VT_MIN_ROWS_FOR_REPORT}건 필요)"
+        )
+
+    weeks: dict[date, list[dict]] = defaultdict(list)
+    for row in vt_rows:
+        exit_at = datetime.fromisoformat(row["exit_at"].replace("Z", "+00:00"))
+        if exit_at.tzinfo is None:
+            exit_at = exit_at.replace(tzinfo=timezone.utc)
+        wk = week_start(exit_at.astimezone(KST).date())
+        weeks[wk].append(row)
+
+    lines = [f"💰 *가상매매 청산 결과* (청산 {len(vt_rows)}건)"]
+    for wk in sorted(weeks.keys()):
+        wrows = weeks[wk]
+        lines.append(f"  {wk.strftime('%m/%d')}주 ({len(wrows)}건) — {_vt_stat_line(wrows)}")
+    lines.append(f"  누적 — {_vt_stat_line(vt_rows)}")
+    return "\n".join(lines)
+
+
 def main():
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
@@ -99,36 +150,39 @@ def main():
     # 서비스 시작 이후 전체 데이터를 대상으로 함 (넉넉하게 180일)
     since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
     rows = store.get_evaluated_signals(since_iso)
-    logger.info(f"평가 완료 신호 {len(rows)}건 조회")
+    vt_rows = store.get_closed_virtual_positions(since_iso)
+    logger.info(f"평가 완료 신호 {len(rows)}건 / 가상매매 청산 {len(vt_rows)}건 조회")
 
     today_str = datetime.now(KST).strftime("%Y-%m-%d")
+    lines = [f"📈 *주간 신호 정확도 리포트* — {today_str}", ""]
 
+    # 신호 적중률 섹션 — 가상매매 섹션과 별개 게이트(한쪽 데이터가 부족해도 다른 쪽은 표시)
     if len(rows) < MIN_ROWS_FOR_REPORT:
-        _send(
-            f"📈 *주간 신호 정확도 리포트* — {today_str}\n\n"
+        lines.append(
             f"아직 평가 완료된 신호가 {len(rows)}건뿐입니다 (최소 {MIN_ROWS_FOR_REPORT}건 필요) — 계속 데이터 수집 중입니다."
         )
-        return
+    else:
+        weeks: dict[date, list[dict]] = defaultdict(list)
+        for row in rows:
+            alerted_at = datetime.fromisoformat(row["alerted_at"].replace("Z", "+00:00"))
+            if alerted_at.tzinfo is None:
+                alerted_at = alerted_at.replace(tzinfo=timezone.utc)
+            row["_alerted_kst"] = alerted_at.astimezone(KST)
+            wk = week_start(row["_alerted_kst"].date())
+            weeks[wk].append(row)
 
-    weeks: dict[date, list[dict]] = defaultdict(list)
-    for row in rows:
-        alerted_at = datetime.fromisoformat(row["alerted_at"].replace("Z", "+00:00"))
-        if alerted_at.tzinfo is None:
-            alerted_at = alerted_at.replace(tzinfo=timezone.utc)
-        row["_alerted_kst"] = alerted_at.astimezone(KST)
-        wk = week_start(row["_alerted_kst"].date())
-        weeks[wk].append(row)
+        for wk in sorted(weeks.keys()):
+            wrows = weeks[wk]
+            stat_parts = _group_stats(wrows)
+            stat_str = " | ".join(stat_parts) if stat_parts else "데이터 없음"
+            lines.append(f"*{wk.strftime('%m/%d')}주* ({len(wrows)}건) — {stat_str}")
 
-    lines = [f"📈 *주간 신호 정확도 리포트* — {today_str}", ""]
-    for wk in sorted(weeks.keys()):
-        wrows = weeks[wk]
-        stat_parts = _group_stats(wrows)
-        stat_str = " | ".join(stat_parts) if stat_parts else "데이터 없음"
-        lines.append(f"*{wk.strftime('%m/%d')}주* ({len(wrows)}건) — {stat_str}")
+        lines.append("")
+        total_parts = _group_stats(rows)
+        lines.append(f"*누적 전체* ({len(rows)}건) — {' | '.join(total_parts) if total_parts else '데이터 없음'}")
 
     lines.append("")
-    total_parts = _group_stats(rows)
-    lines.append(f"*누적 전체* ({len(rows)}건) — {' | '.join(total_parts) if total_parts else '데이터 없음'}")
+    lines.append(_virtual_trading_section(vt_rows))
 
     _send("\n".join(lines))
 

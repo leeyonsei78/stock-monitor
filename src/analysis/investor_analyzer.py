@@ -182,21 +182,34 @@ class InvestorAnalyzer:
 
     # ── 종합 투자자 심리 점수 ────────────────────────────────────
     def get_investor_score(self, current: dict, history: list[dict]) -> dict:
-        """당일 + 히스토리 결합 최종 투자자 심리 점수"""
+        """당일 + 히스토리 결합 최종 투자자 심리 점수
+        당일 데이터가 미집계(is_stale)면 kis_api.get_investor_data()가 마지막 거래일 수치로
+        대체해서 넘겨주는데, 그 수치를 당일 점수처럼 그대로 결합하면 실제로는 며칠 전 방향이
+        "오늘의 수급"으로 둔갑함 (2026-08-25 실측: 000660이 미집계 상태에서 8/21(금) 데이터로
+        수급=+0.527이 되어 관심 신호+가상매수 진입까지 갔다가, 2시간 뒤 실제 당일 데이터가
+        들어오자 수급=-0.315로 정반대로 뒤집힘 — 진입 다음날 손절 청산됨).
+        데이터가 없으면 "안다고 가정"하는 대신 당일 성분을 중립(0)으로 처리 — 히스토리(추세)는
+        이미 실제 과거 거래일 기준이라 이 문제와 무관해 그대로 사용
+        """
         current_result = self.analyze_current(current)
         history_result = self.analyze_history(history)
 
-        # 당일 50% + 히스토리 50% 가중
-        combined_score = current_result["score"] * 0.5 + history_result["score"] * 0.5
+        is_stale = current.get("is_stale", False)
+        current_score = 0.0 if is_stale else current_result["score"]
+
+        # 당일 50% + 히스토리 50% 가중 (미집계 시 당일 성분 중립 처리)
+        combined_score = current_score * 0.5 + history_result["score"] * 0.5
 
         logger.info(
             f"투자자 심리 점수: {combined_score:.3f} "
-            f"(당일={current_result['score']:.3f}, 추세={history_result['score']:.3f})"
+            f"(당일={current_score:.3f}{'(미집계→중립 처리)' if is_stale else ''}, "
+            f"추세={history_result['score']:.3f})"
         )
         return {
             "score": round(combined_score, 4),
             "current": current_result,
             "history": history_result,
+            "is_stale": is_stale,
         }
 
     # ── 시장 전체 수급 분석 (종목 추천용) ───────────────────────

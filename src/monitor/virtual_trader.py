@@ -74,6 +74,15 @@ class VirtualTrader:
         if signal.current_price <= 0:
             return
 
+        # 당일 수급 데이터 미집계 상태에서 나온 신호는 몇 시간 뒤 실제 데이터가 들어오며 점수가
+        # 크게 바뀔 수 있음 (investor_analyzer.get_investor_score가 이 상태의 당일 성분을 중립
+        # 처리하도록 2026-08-25 수정했지만, 그래도 판단 근거의 절반인 히스토리만으로 내려진
+        # 잠정 판단이라 가상매매 진입은 데이터가 채워진 뒤로 미룸 — 실측: 000660이 미집계 상태의
+        # 관심 신호로 진입했다가 2시간 뒤 실제 데이터로 점수가 반전, 다음날 손절 청산됨)
+        if signal.investor_detail.get("current", {}).get("raw", {}).get("is_stale"):
+            logger.info(f"[{signal.ticker}] 당일 수급 미집계 상태 — 가상매수 진입 보류")
+            return
+
         if self._store.get_open_virtual_position(signal.ticker):
             return  # 이미 추적 중
 

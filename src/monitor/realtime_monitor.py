@@ -394,6 +394,11 @@ class RealtimeMonitor:
             f"{fmt_inv('외국인', fgn)}   {fmt_inv('기관', inst)}\n"
             f"{fmt_inv('프로그램*', prog)}   {fmt_inv('개인', ind_)}"
         )
+        if investor_current.get("is_stale"):
+            investor_block += (
+                "\n⚠️ _당일 수급 데이터 미집계 — 위 수치는 마지막 거래일 기준(참고용), "
+                "신호점수 계산에선 당일 성분을 중립 처리함_"
+            )
         if trend_str:
             investor_block += f"\n{trend_str}"
         investor_block += "\n_*프로그램: KIS API가 실제 수량을 제공하지 않아 항상 0으로 표시 — 점수 계산에서도 제외(가중치 0%)됨_"

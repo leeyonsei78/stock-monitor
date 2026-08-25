@@ -203,6 +203,12 @@ git push origin main
   - Slack에 🔍 이모지로 전송, 매수 추천(수량/목표가/손절가)은 계산하지 않고 현재가 + 미충족 사유만 안내
   - 쿨다운·성과추적(`stock_signal_log`)은 매수/매도와 동일하게 적용되나, `evaluate_signals.py`의 적중률 집계에는 포함 안 됨(BUY/SELL 타입만 집계)
   - **`foreign_net_buy`/`price_above_ma20` AND조건 실패 시 WATCH 사각지대 수정 (2026-08-25)**: `_classify_signal()`에서 이 두 조건(현재 `strategy.yaml`에서 둘 다 `false`)이 매수를 막을 때 `watch_reasons`에 아무것도 안 남겨서, 재활성화되면 점수는 매수선 넘었는데 이 두 조건 때문에 막힌 경우만 WATCH 대신 조용히 HOLD로 묻히는 사각지대가 있었음(RSI/거래량 조건엔 이미 `watch_reasons.append()`가 있었는데 이 둘만 빠져 있었음) — WATCH 기능 자체의 존재 목적을 정확히 이 두 조건에서만 못 지키던 상태. `watch_reasons.append()` 추가
+  - **막힌 게이트 구조화 (`watch_blocked_by`, 2026-08-25 추가)**: 실측(041190/377300/207940)으로 "RSI 과열에 막힌 관심"과 "거래량 부족에 막힌 관심"이 이후 가격 흐름이 서로 다르게 갈리는 걸 확인 — 어느 게이트에 막혔는지에 따라 결과가 다를 수 있다는 뜻인데, 기존엔 이 정보가 `reason` 자유 텍스트에만 있어 나중에 통계로 분리하기 번거로웠음. `_classify_signal()`이 `(SignalType, reason, watch_gates)` 3-tuple을 반환하도록 변경 — `watch_gates`는 `["rsi", "volume", "foreign", "ma20"]` 중 막힌 게이트 코드 목록(WATCH 아니면 항상 빈 리스트). `TradeSignal.watch_blocked_by`에 저장되어 `stock_signal_log.watch_blocked_by`(콤마구분 텍스트)와 `stock_virtual_position.watch_blocked_by`(가상매수 진입 시)에 기록됨
+    ```sql
+    alter table stock_signal_log add column watch_blocked_by text;
+    alter table stock_virtual_position add column watch_blocked_by text;
+    ```
+    `save_signal()`/`open_virtual_position()` 둘 다 `is_stale_entry`와 동일한 폴백 패턴(마이그레이션 전이면 이 컬럼만 빼고 재시도) 적용돼 있어 마이그레이션 전에도 안 깨짐. `get_closed_virtual_positions()` select도 동일 원칙으로 방어됨
 - `-0.50` 이하 → 매도
 - `-0.70` 이하 → 강한 매도
 - RSI 과매수(≥70) 매도 조건: **종합 점수 < 0 일 때만 발동** (수급 양호 급등주 오발화 방지, 2026-08-11)

@@ -37,6 +37,7 @@ class TradeSignal:
     take_profit_pct: float = 0.0   # ATR 기반 동적 목표 % (양수)
     expected_return_pct: float = 0.0   # 예상 등락률(경험적 추정, 방향 포함) — Slack 표시용
     expected_return_basis: str = ""    # 위 추정치의 산출 근거 설명
+    watch_blocked_by: list[str] = field(default_factory=list)  # WATCH일 때 막힌 게이트 코드 목록 (rsi/volume/foreign/ma20)
     indicators: dict = field(default_factory=dict)
     investor_detail: dict = field(default_factory=dict)
 
@@ -130,7 +131,7 @@ class SignalGenerator:
         current_price = realtime_price if realtime_price > 0 else int(ind.get("current_price", 0))
         ind["current_price"] = current_price  # Slack 메시지에도 반영
 
-        signal_type, reason = self._classify_signal(
+        signal_type, reason, watch_blocked_by = self._classify_signal(
             final_score, tech_result, inv_result, holding_qty, avg_price, current_price,
             position_stop_loss_pct, position_take_profit_pct,
         )
@@ -161,6 +162,7 @@ class SignalGenerator:
             take_profit_pct=take_profit_pct,
             expected_return_pct=expected_return_pct,
             expected_return_basis=expected_return_basis,
+            watch_blocked_by=watch_blocked_by,
             indicators=ind,
             investor_detail=inv_result,
         )
@@ -231,7 +233,11 @@ class SignalGenerator:
         current_price: int,
         position_stop_loss_pct: Optional[float] = None,
         position_take_profit_pct: Optional[float] = None,
-    ) -> tuple[SignalType, str]:
+    ) -> tuple[SignalType, str, list[str]]:
+        """반환값 3번째 항목(watch_gates): WATCH로 분류될 때 어떤 매수 AND조건에 막혔는지
+        구조화된 코드 리스트("rsi"/"volume"/"foreign"/"ma20") — reason 텍스트는 사람이 읽기 위한
+        것이고 이건 나중에 게이트별 성과(예: RSI에 막힌 관심 vs 거래량에 막힌 관심)를 통계로
+        분리하기 위한 것 (2026-08-25 추가). WATCH가 아니면 항상 빈 리스트."""
         buy_cfg = self._cfg["buy_conditions"]
         sell_cfg = self._cfg["sell_conditions"]
 
@@ -245,9 +251,9 @@ class SignalGenerator:
             stop_loss_pct = position_stop_loss_pct if position_stop_loss_pct is not None else self._risk_cfg["stop_loss_pct"]
             take_profit_pct = position_take_profit_pct if position_take_profit_pct is not None else self._risk_cfg["take_profit_pct"]
             if change_pct <= stop_loss_pct:
-                return SignalType.STRONG_SELL, f"손절 기준 도달 ({change_pct:.1f}%, 기준 {stop_loss_pct:.1f}%)"
+                return SignalType.STRONG_SELL, f"손절 기준 도달 ({change_pct:.1f}%, 기준 {stop_loss_pct:.1f}%)", []
             if change_pct >= take_profit_pct:
-                return SignalType.SELL, f"익절 기준 도달 ({change_pct:.1f}%, 기준 {take_profit_pct:.1f}%)"
+                return SignalType.SELL, f"익절 기준 도달 ({change_pct:.1f}%, 기준 {take_profit_pct:.1f}%)", []
 
         ind = tech_result["indicators"]
         inv_current = inv_result["current"]
@@ -293,15 +299,16 @@ class SignalGenerator:
 
         if reasons:
             if score < -0.7:
-                return SignalType.STRONG_SELL, " / ".join(reasons)
-            return SignalType.SELL, " / ".join(reasons)
+                return SignalType.STRONG_SELL, " / ".join(reasons), []
+            return SignalType.SELL, " / ".join(reasons), []
 
         # 매수 조건 (AND)
         rsi = ind.get("rsi", 50)
         vol_ratio = ind.get("volume_ratio", 1.0)
         ma20 = ind.get("ma20", 0)
         buy_reasons = []
-        watch_reasons = []   # 점수는 매수선 통과했지만 다른 조건에 막힌 사유 (관심 신호용)
+        watch_reasons = []   # 점수는 매수선 통과했지만 다른 조건에 막힌 사유 (관심 신호용, 사람이 읽는 텍스트)
+        watch_gates = []     # 위와 동일한 정보를 구조화된 코드로 (rsi/volume/foreign/ma20, 통계 집계용)
 
         score_ok = score >= buy_cfg["min_signal_score"]
         if not score_ok and stale_buy_override:
@@ -314,6 +321,7 @@ class SignalGenerator:
         if not rsi_ok:
             meets_all = False
             watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
+            watch_gates.append("rsi")
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
         volume_ok = vol_ratio >= buy_cfg["volume_min_ratio"] or day_return >= 0.05
@@ -322,6 +330,7 @@ class SignalGenerator:
             watch_reasons.append(
                 f"거래량 부족({vol_ratio:.1f}x<{buy_cfg['volume_min_ratio']}, 당일{day_return*100:.1f}%<5%)"
             )
+            watch_gates.append("volume")
         elif vol_ratio >= buy_cfg["volume_min_ratio"]:
             buy_reasons.append(f"거래량 충분({vol_ratio:.1f}x)")
         else:
@@ -334,6 +343,7 @@ class SignalGenerator:
             if foreign_qty <= 0:
                 meets_all = False
                 watch_reasons.append(f"외국인 순매수 조건 미충족({foreign_qty:+,}주)")
+                watch_gates.append("foreign")
             else:
                 buy_reasons.append("외국인 순매수")
         elif foreign_qty > 0:
@@ -342,6 +352,7 @@ class SignalGenerator:
             if current_price < ma20:
                 meets_all = False
                 watch_reasons.append(f"20일선 아래({current_price:,}<{ma20:,.0f})")
+                watch_gates.append("ma20")
             else:
                 buy_reasons.append("20일선 위")
         elif current_price > ma20:
@@ -349,8 +360,8 @@ class SignalGenerator:
 
         if meets_all:
             if score >= 0.75 and inv_hist.get("foreign_streak", 0) >= 3:
-                return SignalType.STRONG_BUY, " / ".join(buy_reasons)
-            return SignalType.BUY, " / ".join(buy_reasons)
+                return SignalType.STRONG_BUY, " / ".join(buy_reasons), []
+            return SignalType.BUY, " / ".join(buy_reasons), []
 
         if score_ok and watch_reasons:
             # 종합점수는 매수선을 넘었는데 RSI/거래량 조건에 막힌 근접 사례 — 조용히 묻지 않고 알림 (2026-08-21)
@@ -360,9 +371,9 @@ class SignalGenerator:
                 if stale_buy_override and score < buy_cfg["min_signal_score"]
                 else f"매수선 통과(점수 {score:.3f})"
             )
-            return SignalType.WATCH, f"{score_basis}했으나 " + ", ".join(watch_reasons)
+            return SignalType.WATCH, f"{score_basis}했으나 " + ", ".join(watch_reasons), watch_gates
 
-        return SignalType.HOLD, "매매 조건 미충족"
+        return SignalType.HOLD, "매매 조건 미충족", []
 
     def generate_opinion(
         self,

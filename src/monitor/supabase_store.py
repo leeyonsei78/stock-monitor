@@ -38,8 +38,8 @@ class SupabaseSignalStore:
             return True  # 오류 시 알림 허용
 
     # 최근 추가된 컬럼 — 마이그레이션 전이면 insert가 실패할 수 있어 save_signal()에서
-    # 폴백 대상으로 취급 (2026-08-24)
-    _OPTIONAL_SIGNAL_COLUMNS = ("vkospi", "futures_basis")
+    # 폴백 대상으로 취급 (2026-08-24, watch_blocked_by는 2026-08-25 추가)
+    _OPTIONAL_SIGNAL_COLUMNS = ("vkospi", "futures_basis", "watch_blocked_by")
 
     def save_signal(
         self,
@@ -51,6 +51,7 @@ class SupabaseSignalStore:
         reason: Optional[str] = None,
         vkospi: Optional[float] = None,
         futures_basis: Optional[float] = None,
+        watch_blocked_by: Optional[list[str]] = None,
     ):
         row = {
             "ticker": ticker,
@@ -68,6 +69,10 @@ class SupabaseSignalStore:
             row["vkospi"] = vkospi
         if futures_basis is not None:
             row["futures_basis"] = futures_basis
+        # WATCH일 때 어떤 매수 AND조건에 막혔는지(rsi/volume/foreign/ma20, 콤마 구분) — 나중에
+        # 게이트별 성과를 통계로 분리하기 위함 (2026-08-25 추가, signal_generator._classify_signal 참고)
+        if watch_blocked_by:
+            row["watch_blocked_by"] = ",".join(watch_blocked_by)
 
         try:
             self._client.table("stock_signal_log").insert(row).execute()
@@ -182,7 +187,7 @@ class SupabaseSignalStore:
     # (2026-08-25 추가. expected_return_pct는 2026-08-24에 폴백 없이 추가했다가 마이그레이션
     # 전 신규 진입이 전부 조용히 막혔던 전례가 있어 이번엔 처음부터 방어함 — expected_return_pct
     # 자체는 이미 마이그레이션 완료된 운영 컬럼이라 이 폴백 대상에서 제외)
-    _OPTIONAL_VIRTUAL_POSITION_COLUMNS = ("is_stale_entry",)
+    _OPTIONAL_VIRTUAL_POSITION_COLUMNS = ("is_stale_entry", "watch_blocked_by")
 
     def open_virtual_position(
         self,
@@ -197,6 +202,7 @@ class SupabaseSignalStore:
         stop_pct: float,
         expected_return_pct: Optional[float] = None,
         is_stale_entry: Optional[bool] = None,
+        watch_blocked_by: Optional[list[str]] = None,
     ) -> Optional[int]:
         row = {
             "ticker": ticker,
@@ -217,6 +223,10 @@ class SupabaseSignalStore:
         # 나눠서 비교하기 위함 (2026-08-25 추가)
         if is_stale_entry is not None:
             row["is_stale_entry"] = is_stale_entry
+        # WATCH 신호로 진입한 경우 어떤 게이트(rsi/volume/foreign/ma20)에 막혔었는지 — 게이트별
+        # 성과를 나중에 통계로 분리하기 위함 (2026-08-25 추가)
+        if watch_blocked_by:
+            row["watch_blocked_by"] = ",".join(watch_blocked_by)
 
         try:
             result = self._client.table("stock_virtual_position").insert(row).execute()
@@ -265,9 +275,9 @@ class SupabaseSignalStore:
 
     def get_closed_virtual_positions(self, since_iso: str) -> list[dict]:
         """청산 완료된 가상 포지션 조회 (주간 리포트용).
-        is_stale_entry는 마이그레이션 전이면 select 자체가 실패할 수 있어(insert와 달리 select는
-        컬럼 존재 여부와 무관하게 부분 실패가 안 됨) 먼저 포함해서 시도하고, 실패하면 빼고
-        재시도 — 마이그레이션 전에도 기존 리포트가 깨지지 않도록 함 (2026-08-25)
+        is_stale_entry/watch_blocked_by는 마이그레이션 전이면 select 자체가 실패할 수 있어(insert와
+        달리 select는 컬럼 존재 여부와 무관하게 부분 실패가 안 됨) 먼저 포함해서 시도하고, 실패하면
+        둘 다 빼고 재시도 — 마이그레이션 전에도 기존 리포트가 깨지지 않도록 함 (2026-08-25)
         """
         base_cols = (
             "id, ticker, name, signal_type, entry_price, entry_at, "
@@ -276,7 +286,7 @@ class SupabaseSignalStore:
         try:
             result = (
                 self._client.table("stock_virtual_position")
-                .select(base_cols + ", is_stale_entry")
+                .select(base_cols + ", is_stale_entry, watch_blocked_by")
                 .eq("status", "closed")
                 .gte("exit_at", since_iso)
                 .order("exit_at")

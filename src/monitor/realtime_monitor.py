@@ -158,13 +158,14 @@ class RealtimeMonitor:
         price: int = 0,
         expected_return_pct: Optional[float] = None,
         reason: Optional[str] = None,
+        watch_blocked_by: Optional[list[str]] = None,
     ):
         if self._store:
             vkospi_value = self._vkospi["value"] if self._vkospi else None
             futures_basis = self._futures["basis"] if self._futures else None
             self._store.save_signal(
                 ticker, signal_type.value, score, price, expected_return_pct, reason,
-                vkospi_value, futures_basis,
+                vkospi_value, futures_basis, watch_blocked_by,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
@@ -602,7 +603,7 @@ class RealtimeMonitor:
         self._notifier.send_sync(msg)
         self._mark_alerted(
             ticker, signal.signal_type, signal.score, signal.current_price,
-            signal.expected_return_pct, signal.reason,
+            signal.expected_return_pct, signal.reason, signal.watch_blocked_by,
         )
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "

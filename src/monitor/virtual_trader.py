@@ -109,6 +109,9 @@ class VirtualTrader:
             expected_return_pct=signal.expected_return_pct,
             # 진입 시점 당일 수급 미집계 여부 — 미집계/정상 시점 진입 성과를 나중에 나눠 비교하기 위함 (2026-08-25)
             is_stale_entry=is_stale,
+            # WATCH 진입인 경우 어떤 게이트(rsi/volume/foreign/ma20)에 막혔었는지 — 게이트별
+            # 성과를 나중에 통계로 분리하기 위함 (2026-08-25)
+            watch_blocked_by=signal.watch_blocked_by,
         )
         if row_id:
             stale_tag = " [미집계 시점]" if is_stale else ""

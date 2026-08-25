@@ -141,7 +141,11 @@ class SignalGenerator:
             budget = self._trade_cfg["max_budget_per_stock"]
             if signal_type == SignalType.STRONG_BUY:
                 budget = int(budget * 1.5)
-            recommended_qty = int(budget / current_price) if current_price > 0 else 0
+            # 최소 1주로 floor (2026-08-26 수정): realtime_monitor._calc_recommendation,
+            # virtual_trader.open_if_new는 이미 동일하게 floor 처리돼 있었는데 이 원천 계산만
+            # 빠져 있어, 종목가가 예산을 넘는 종목은 auto_trader가 quantity=0으로 주문을 넣다가
+            # OrderManager.buy()의 0수량 가드에 조용히 막혀 매수 자체가 통째로 스킵됐음
+            recommended_qty = max(1, int(budget / current_price)) if current_price > 0 else 0
 
         stop_loss_pct, take_profit_pct = self._calc_dynamic_risk(ind.get("atr_pct"))
         expected_return_pct, expected_return_basis = self._calc_expected_return(
@@ -338,15 +342,22 @@ class SignalGenerator:
             # 당일 5% 이상 급등은 거래량 배율 미달이어도 참여 강도가 충분한 것으로 간주 (2026-08-21)
             buy_reasons.append(f"급등 거래량 예외(당일 {day_return*100:.1f}%)")
         # 원시 수량으로 확인 (score=-0.3이면 qty=0인데 score 기준 혼동 방지)
+        # is_stale_investor(당일 미집계, 위 stale_data_override 참고)일 때는 이 raw foreign이
+        # 실제로는 며칠 전 값 — investor_analyzer.get_investor_score()가 점수에서는 이미 당일
+        # 성분을 중립 처리하는데, 이 AND조건은 원시값을 그대로 써서 그 보호를 우회하고 있었음
+        # (2026-08-26 수정) — 현재 foreign_net_buy: false라 실질 영향은 없지만 재활성화 시
+        # 재발할 수 있어 미리 방어
         foreign_qty = inv_current["raw"].get("foreign", 0)
         if buy_cfg["foreign_net_buy"]:
-            if foreign_qty <= 0:
+            if is_stale_investor:
+                buy_reasons.append("외국인 수급 미집계 — 조건 판정 보류(통과 처리)")
+            elif foreign_qty <= 0:
                 meets_all = False
                 watch_reasons.append(f"외국인 순매수 조건 미충족({foreign_qty:+,}주)")
                 watch_gates.append("foreign")
             else:
                 buy_reasons.append("외국인 순매수")
-        elif foreign_qty > 0:
+        elif foreign_qty > 0 and not is_stale_investor:
             buy_reasons.append("외국인 순매수")
         if buy_cfg["price_above_ma20"]:
             if current_price < ma20:

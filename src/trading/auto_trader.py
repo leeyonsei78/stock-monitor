@@ -4,6 +4,7 @@
 """
 import asyncio
 from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 import yaml
 from src.api.kis_api import KISApi
 from src.api.websocket_client import KISWebSocket
@@ -40,14 +41,17 @@ class AutoTrader:
         self._running = False
 
     # ── 장 시간 확인 ─────────────────────────────────────────────
+    # KST 명시 (2026-08-26 수정): realtime_monitor.py는 이미 이 문제(공휴일 미반영)를 겪고
+    # ZoneInfo("Asia/Seoul")로 고쳤는데 이 클래스만 naive datetime.now()가 남아있었음 —
+    # KST가 아닌 호스트(로컬 개발 PC 등)에서 돌리면 장 시간 판정이 어긋남
     def _is_market_open(self) -> bool:
-        now = datetime.now().time()
+        now = datetime.now(ZoneInfo("Asia/Seoul")).time()
         open_t = dtime(*map(int, self._schedule["market_open"].split(":")))
         close_t = dtime(*map(int, self._schedule["market_close"].split(":")))
         return open_t <= now <= close_t
 
     def _is_weekday(self) -> bool:
-        return datetime.now().weekday() < 5  # 월~금
+        return datetime.now(ZoneInfo("Asia/Seoul")).weekday() < 5  # 월~금
 
     # ── 종목 스크리닝 ────────────────────────────────────────────
     async def _screen_watchlist(self):
@@ -197,7 +201,7 @@ class AutoTrader:
 
         while self._running:
             try:
-                now = datetime.now()
+                now = datetime.now(ZoneInfo("Asia/Seoul"))
                 ts = now.timestamp()
 
                 if not self._is_weekday():

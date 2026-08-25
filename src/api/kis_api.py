@@ -13,6 +13,7 @@ import urllib.request
 import requests
 from requests.exceptions import ConnectionError as ReqConnError, Timeout as ReqTimeout
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 import yaml
 from dotenv import load_dotenv
@@ -203,8 +204,11 @@ class KISApi:
     def get_daily_ohlcv(self, ticker: str, period: int = 120) -> list[dict]:
         """일봉 데이터 조회 — FinanceDataReader(KRX 공개 데이터, API 키 불필요)"""
         import FinanceDataReader as fdr
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=period * 2)).strftime("%Y%m%d")
+        # KST 명시 (2026-08-26 수정): GitHub Actions 러너는 UTC라 naive datetime.now()를
+        # 쓰면 장전(08:00~09:00 KST) 스캔 시 UTC 날짜가 하루 전으로 밀림
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        end_date = now_kst.strftime("%Y%m%d")
+        start_date = (now_kst - timedelta(days=period * 2)).strftime("%Y%m%d")
         df = fdr.DataReader(ticker, start_date, end_date)
         if df is None or df.empty:
             return []
@@ -309,7 +313,11 @@ class KISApi:
                 "FID_ETC_CLS_CODE": "",
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_HOUR_1": datetime.now().strftime("%H%M%S"),
+                # KST 명시 (2026-08-26 수정): GitHub Actions(UTC) 러너에서 naive datetime.now()를
+                # 쓰면 정규장(09:00~15:30 KST) 스캔인데도 실제 KST 시각보다 9시간 이른 값이 전달돼
+                # 장 시작 전 시각으로 조회 요청 → 분봉이 안 잡혀 분봉 모멘텀이 늘 "데이터부족"으로
+                # 저하될 수 있었음
+                "FID_INPUT_HOUR_1": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H%M%S"),
                 "FID_PW_DATA_INCU_YN": "N",
             },
             base=self._quote_url,

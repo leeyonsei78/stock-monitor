@@ -178,6 +178,12 @@ class SupabaseSignalStore:
             logger.error(f"가상 포지션 조회 실패 [{ticker}]: {e}")
             return None  # 오류 시 중복 방지 우선 — 새로 열지 않고 다음 스캔에 재시도
 
+    # 최근 추가된 컬럼 — 마이그레이션 전이면 insert가 실패할 수 있어 폴백 대상으로 취급
+    # (2026-08-25 추가. expected_return_pct는 2026-08-24에 폴백 없이 추가했다가 마이그레이션
+    # 전 신규 진입이 전부 조용히 막혔던 전례가 있어 이번엔 처음부터 방어함 — expected_return_pct
+    # 자체는 이미 마이그레이션 완료된 운영 컬럼이라 이 폴백 대상에서 제외)
+    _OPTIONAL_VIRTUAL_POSITION_COLUMNS = ("is_stale_entry",)
+
     def open_virtual_position(
         self,
         ticker: str,
@@ -190,26 +196,41 @@ class SupabaseSignalStore:
         target_pct: float,
         stop_pct: float,
         expected_return_pct: Optional[float] = None,
+        is_stale_entry: Optional[bool] = None,
     ) -> Optional[int]:
+        row = {
+            "ticker": ticker,
+            "name": name,
+            "signal_type": signal_type,
+            "entry_price": entry_price,
+            "qty": qty,
+            "target_price": target_price,
+            "stop_price": stop_price,
+            "target_pct": target_pct,
+            "stop_pct": stop_pct,
+        }
+        # 진입 시점의 예상 등락률(ATR×신호강도 경험적 추정치) 저장 — 청산 후 실제 수익률과
+        # 비교해 "예측이 실제 거래 결과와 얼마나 맞았는지" 정확도 계산에 사용 (2026-08-24 추가)
+        if expected_return_pct is not None:
+            row["expected_return_pct"] = expected_return_pct
+        # 진입 시점 당일 수급 미집계 여부 — 미집계 시점 진입과 정상 시점 진입의 성과를 나중에
+        # 나눠서 비교하기 위함 (2026-08-25 추가)
+        if is_stale_entry is not None:
+            row["is_stale_entry"] = is_stale_entry
+
         try:
-            row = {
-                "ticker": ticker,
-                "name": name,
-                "signal_type": signal_type,
-                "entry_price": entry_price,
-                "qty": qty,
-                "target_price": target_price,
-                "stop_price": stop_price,
-                "target_pct": target_pct,
-                "stop_pct": stop_pct,
-            }
-            # 진입 시점의 예상 등락률(ATR×신호강도 경험적 추정치) 저장 — 청산 후 실제 수익률과
-            # 비교해 "예측이 실제 거래 결과와 얼마나 맞았는지" 정확도 계산에 사용 (2026-08-24 추가)
-            if expected_return_pct is not None:
-                row["expected_return_pct"] = expected_return_pct
             result = self._client.table("stock_virtual_position").insert(row).execute()
             return result.data[0]["id"] if result.data else None
         except Exception as e:
+            stripped = [c for c in self._OPTIONAL_VIRTUAL_POSITION_COLUMNS if row.pop(c, None) is not None]
+            if stripped:
+                logger.warning(f"[{ticker}] {stripped} 포함 가상포지션 저장 실패({e}) — 제외하고 재시도 (컬럼 마이그레이션 필요할 수 있음)")
+                try:
+                    result = self._client.table("stock_virtual_position").insert(row).execute()
+                    return result.data[0]["id"] if result.data else None
+                except Exception as e2:
+                    logger.error(f"가상 포지션 진입 저장 실패(재시도 포함) [{ticker}]: {e2}")
+                    return None
             logger.error(f"가상 포지션 진입 저장 실패 [{ticker}]: {e}")
             return None
 
@@ -243,14 +264,31 @@ class SupabaseSignalStore:
             logger.error(f"가상 포지션 청산 저장 실패 [id={row_id}]: {e}")
 
     def get_closed_virtual_positions(self, since_iso: str) -> list[dict]:
-        """청산 완료된 가상 포지션 조회 (주간 리포트용)"""
+        """청산 완료된 가상 포지션 조회 (주간 리포트용).
+        is_stale_entry는 마이그레이션 전이면 select 자체가 실패할 수 있어(insert와 달리 select는
+        컬럼 존재 여부와 무관하게 부분 실패가 안 됨) 먼저 포함해서 시도하고, 실패하면 빼고
+        재시도 — 마이그레이션 전에도 기존 리포트가 깨지지 않도록 함 (2026-08-25)
+        """
+        base_cols = (
+            "id, ticker, name, signal_type, entry_price, entry_at, "
+            "exit_price, exit_at, exit_reason, return_pct, hold_days, expected_return_pct"
+        )
         try:
             result = (
                 self._client.table("stock_virtual_position")
-                .select(
-                    "id, ticker, name, signal_type, entry_price, entry_at, "
-                    "exit_price, exit_at, exit_reason, return_pct, hold_days, expected_return_pct"
-                )
+                .select(base_cols + ", is_stale_entry")
+                .eq("status", "closed")
+                .gte("exit_at", since_iso)
+                .order("exit_at")
+                .execute()
+            )
+            return result.data or []
+        except Exception:
+            pass
+        try:
+            result = (
+                self._client.table("stock_virtual_position")
+                .select(base_cols)
                 .eq("status", "closed")
                 .gte("exit_at", since_iso)
                 .order("exit_at")

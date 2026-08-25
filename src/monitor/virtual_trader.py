@@ -74,14 +74,13 @@ class VirtualTrader:
         if signal.current_price <= 0:
             return
 
-        # 당일 수급 데이터 미집계 상태에서 나온 신호는 몇 시간 뒤 실제 데이터가 들어오며 점수가
-        # 크게 바뀔 수 있음 (investor_analyzer.get_investor_score가 이 상태의 당일 성분을 중립
-        # 처리하도록 2026-08-25 수정했지만, 그래도 판단 근거의 절반인 히스토리만으로 내려진
-        # 잠정 판단이라 가상매매 진입은 데이터가 채워진 뒤로 미룸 — 실측: 000660이 미집계 상태의
-        # 관심 신호로 진입했다가 2시간 뒤 실제 데이터로 점수가 반전, 다음날 손절 청산됨)
-        if signal.investor_detail.get("current", {}).get("raw", {}).get("is_stale"):
-            logger.info(f"[{signal.ticker}] 당일 수급 미집계 상태 — 가상매수 진입 보류")
-            return
+        # 당일 수급 데이터 미집계 상태(investor_analyzer.get_investor_score가 당일 성분을
+        # 중립 처리한 상태, 2026-08-25 수정)에서도 가상매매는 계속 진행 — 미집계 구간을 통째로
+        # 건너뛰면 정규장 전반부(대략 09~15시, 전체 거래시간의 절반 이상) 신호에 대한 검증
+        # 데이터가 영영 안 쌓여서 오히려 로직 정교화 목적에 반함. 대신 진입 시점이 미집계
+        # 상태였는지 기록해둬서(is_stale_entry) 나중에 미집계 시점 진입과 정상 시점 진입의
+        # 성과를 나눠서 비교할 수 있게 함 (사용자 지시, 2026-08-25)
+        is_stale = signal.investor_detail.get("current", {}).get("raw", {}).get("is_stale", False)
 
         if self._store.get_open_virtual_position(signal.ticker):
             return  # 이미 추적 중
@@ -108,11 +107,14 @@ class VirtualTrader:
             stop_pct=signal.stop_loss_pct,
             # 진입 시점 예상 등락률 — 청산 후 실제 수익률과 비교해 예측 정확도 계산에 사용 (2026-08-24)
             expected_return_pct=signal.expected_return_pct,
+            # 진입 시점 당일 수급 미집계 여부 — 미집계/정상 시점 진입 성과를 나중에 나눠 비교하기 위함 (2026-08-25)
+            is_stale_entry=is_stale,
         )
         if row_id:
+            stale_tag = " [미집계 시점]" if is_stale else ""
             logger.info(
                 f"[{signal.ticker}] 가상매수 진입: {signal.name} {qty}주 @ {signal.current_price:,}원 "
-                f"(목표 {target_price:,} / 손절 {stop_price:,}, {signal.signal_type.value} 기준)"
+                f"(목표 {target_price:,} / 손절 {stop_price:,}, {signal.signal_type.value} 기준){stale_tag}"
             )
 
     # ── 청산 체크 ────────────────────────────────────────────────

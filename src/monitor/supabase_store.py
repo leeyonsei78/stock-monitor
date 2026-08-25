@@ -347,3 +347,31 @@ class SupabaseSignalStore:
         except Exception as e:
             logger.error(f"KIS 토큰 조회 실패: {e}")
         return None, None
+
+    # ── 투자자 수급 일일 아카이빙 (2026-08-25 추가) ────────────────
+    # KIS inquire-investor(FHKST01010900)가 최근 30거래일치만 제공해 과거 수급으로
+    # 백테스트가 불가능한 제약(위 backtest_technical_score.py 독스트링 참고)을 완화하기
+    # 위해, archive_investor_data.py가 매일 장마감 후 당일(미집계 아닌) 수급을 이 테이블에
+    # 쌓아 자체 히스토리를 만든다 — 지금 시작해야 나중에 그만큼 쓸 수 있는 데이터라 지연
+    # 없이 도입. (ticker, archive_date) unique라 같은 날 재실행해도 upsert로 안전
+    def upsert_investor_archive(
+        self, ticker: str, name: str, archive_date: str,
+        foreign: int, institution: int, individual: int, program: int,
+    ) -> bool:
+        try:
+            self._client.table("stock_investor_daily_archive").upsert(
+                {
+                    "ticker": ticker,
+                    "name": name,
+                    "archive_date": archive_date,
+                    "foreign_qty": foreign,
+                    "institution_qty": institution,
+                    "individual_qty": individual,
+                    "program_qty": program,
+                },
+                on_conflict="ticker,archive_date",
+            ).execute()
+            return True
+        except Exception as e:
+            logger.error(f"투자자 아카이브 저장 실패 [{ticker}]: {e}")
+            return False

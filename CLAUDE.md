@@ -404,6 +404,63 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
   - 투자자 수급(30%)은 KIS API 제약(최근 30거래일만 제공)으로 이 백테스트 대상에서 제외 — 위 주간/신호 성과 추적으로 실시간 검증
   - 2026-08-21 1차 결과로 `signal_weights` 재조정 완료 (아래 표 참고): MACD·거래량 역상관 확인돼 축소, 볼린저·상대강도 정상관 확인돼 확대
 
+## 워크포워드 매매규칙 백테스트 (2026-08-25 추가)
+`backtest_technical_score.py`는 "기술점수가 미래 수익률과 상관관계가 있는가"만 보는데, RSI 과열/거래량
+부족으로 막힌 관심(WATCH) 신호가 실제로 다른 성과를 내는지(041190은 이후 반락, 377300은 계속 상승한 걸
+하루 실측 비교하다 나온 질문)를 대량 표본으로 검증하기 위해 `backtest_trading_rules.py` 추가.
+`signal_generator._classify_signal()`의 매수 AND조건(RSI≤60, 거래량≥1.3배 또는 당일+5%)과
+`_calc_dynamic_risk()`의 ATR 기반 손절/목표를 그대로 재현해, "매수선(0.30) 통과 시점마다 게이트별로
+어떻게 됐을지"를 워크포워드 시뮬레이션(손절>목표>타임아웃 10거래일 우선순위, `virtual_trader.py`와 동일).
+- **1차 결과(35종목 고정 유니버스, 원시 수익률, 2026-08-25)**: 게이트 통과(실제 매수) 66건 평균 -0.45%,
+  RSI차단 481건 평균 +0.39% — 게이트 통과군이 오히려 더 나쁜 것처럼 보였으나, **t-검정 결과 p=0.44~0.65로
+  전혀 유의하지 않음**(종목당 수익률 표준편차 8~9%가 표본 대비 너무 큼) — "게이트가 나쁘다"고 결론 내릴 근거
+  아직 없음, 다만 "게이트가 확실히 도움된다"는 근거도 마찬가지로 없음
+- **2차 개선 (같은 날)**: 노이즈를 줄이기 위해 두 가지 변경
+  1. **유니버스 확대**: 35종목 하드코딩 → `build_universe()`가 `strategy.yaml screening` 기준(가격/거래량/
+     시총)을 KOSPI+KOSDAQ 전체 상장 목록(FDR `StockListing`)에 적용해 시가총액 상위 150개를 동적 선정 —
+     실제 스캔 스크리닝(`realtime_monitor.py _scan_once()`)과 같은 기준이라 대표성이 높음. ETF는 브랜드명
+     키워드(KODEX/TIGER/KBSTAR 등)로 별도 제외(바스켓 상품이라 개별종목 게이트 검증 취지와 안 맞음).
+     **단점**: 오늘 시가총액 스냅샷 기준이라 재실행마다 종목 구성이 달라져 재현성은 낮음
+  2. **초과수익률(코스피 대비) 병기**: 원시 수익률의 노이즈 상당수가 "보유 기간 중 시장 전체 변동"일 가능성이
+     높아, 같은 기간 코스피 수익률을 뺀 초과수익률을 raw 수익률과 나란히 산출 — 표본을 늘리지 않고도 검정력을
+     높이는 게 목적
+- 투자자 수급(30%)은 여전히 백테스트 불가 — 미상 구간을 중립(0) 처리한 기술점수 근사치 기준이라 실제 운영
+  점수와 정확히 일치하지 않는다는 한계는 그대로. 이 한계를 메우려고 아래 "투자자 수급 일일 아카이빙" 도입
+- 결과 CSV(`backtest_trading_rules_result.csv`)는 `.gitignore` 처리(기존 `backtest_result*.csv` 패턴과
+  파일명이 안 겹쳐 별도 패턴 추가 필요했음). 워크플로우는 아직 없음(수동 실행) — 필요해지면 `quarterly_backtest.yml`처럼 스케줄 추가 가능
+
+## 투자자 수급 일일 아카이빙 (2026-08-25 추가)
+KIS `inquire-investor`(FHKST01010900)는 항상 "최근 30거래일"치만 반환해 과거 수급을 재현할 수 없음 —
+위 두 백테스트 스크립트 모두 수급(30% 비중)을 검증 못 하는 근본 원인. 늦게 시작할수록 그만큼 데이터가
+영구히 없는 채로 남으므로, 2026-08-25부터 매일 당일 수급을 자체적으로 쌓기 시작.
+- **스크립트**: `archive_investor_data.py` — `config.yaml watchlist` + `backtest_trading_rules.build_universe()`
+  (시가총액 상위 150) 합집합을 대상으로 `KISApi.get_investor_data()` 호출 → `is_stale`(미집계)이면 스킵,
+  아니면 `stock_investor_daily_archive`에 upsert
+  - 미집계 상태를 "당일"로 저장하면 며칠 전 데이터가 오늘 걸로 둔갑하는, 같은 날 `investor_analyzer.py`에서
+    고친 것과 동일한 문제가 재현되므로 반드시 `is_stale` 체크 후 스킵 — 못 채운 종목은 다음날 재시도
+  - 절반 이상 미집계/실패면 Slack 경고, 평소엔 로그만(매일 알림 스팸 방지)
+- **워크플로우**: `.github/workflows/archive_investor_data.yml` — 평일 18:00 KST(장마감+미집계 구간 지난
+  뒤) 자동 실행, `workflow_dispatch`로 수동 실행 가능
+- **Supabase 테이블** (수동 SQL 생성 필요):
+  ```sql
+  create table stock_investor_daily_archive (
+    id bigserial primary key,
+    ticker text not null,
+    name text,
+    archive_date text not null,  -- YYYYMMDD, OHLCV date 필드와 동일 포맷
+    foreign_qty integer,
+    institution_qty integer,
+    individual_qty integer,
+    program_qty integer,
+    created_at timestamptz not null default now(),
+    unique (ticker, archive_date)
+  );
+  create index on stock_investor_daily_archive (ticker, archive_date);
+  alter table stock_investor_daily_archive disable row level security;
+  ```
+- **아직 안 한 것**: 이 아카이브를 실제로 읽어서 수급 포함 백테스트를 도는 스크립트는 없음 — 데이터가
+  몇 달~1년쯤 쌓인 뒤에 만들 계획. 지금은 순수 수집 단계
+
 ## 가상매매(paper trading) 추적 (2026-08-24 추가)
 매수/관심(WATCH) 신호가 뜨면 "지금 샀다고 가정"하고 목표가/손절가/반대신호 도달까지 계속 추적해서
 청산 결과(시점·가격·보유일수·수익률)를 Slack으로 알림. 향후 자동매매(`trading.mode: auto`) 전환을

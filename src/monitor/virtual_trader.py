@@ -178,8 +178,8 @@ class VirtualTrader:
         # astimezone() 인자 없이 호출하면 실행 호스트의 로컬 타임존으로 변환됨(KST 고정 아님) —
         # 현재 운영 중인 GitHub Actions 러너는 UTC 호스트라 "KST"라고 라벨된 시각이 실제로는
         # UTC로 표시되던 문제 (2026-08-26 수정, kis_api.py/auto_trader.py의 동일 유형 수정과 동일 원인)
-        entry_kst = entry_at.astimezone(KST).strftime("%Y-%m-%d %H:%M")
-        now_kst = now.astimezone(KST).strftime("%Y-%m-%d %H:%M")
+        entry_kst = entry_at.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
+        now_kst = now.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
         msg = (
             f"💰 *[가상매매 청산] {pos['name']} ({pos['ticker']})*\n"
             f"진입: {entry_kst} @ {entry_price:,}원 ({pos['qty']}주, {pos['signal_type']} 신호 기준)\n"

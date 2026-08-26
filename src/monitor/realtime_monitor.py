@@ -115,8 +115,14 @@ class RealtimeMonitor:
         self._last_alert: dict[str, tuple[str, datetime]] = {}
         self._running = False
 
+        # 스캔 종료 시 종목별 신호 한눈 요약 전송 여부 (2026-08-26 추가)
+        # 종목별 상세 알림은 쿨다운(4시간)으로 제한되지만, 이 요약은 쿨다운과 무관하게
+        # 매 스캔의 전체 현황을 보내 "종목이 많을 때 놓치는" 문제를 막는 역할
+        self._scan_summary = monitor_cfg.get("scan_summary", True)
+
         # 지수 대비 상대강도용 벤치마크 데이터 — _scan_once()에서 스캔당 1회 갱신
-        self._index_ohlcv: Optional[list[dict]] = None
+        # (2026-08-26부터 {"KS11": [...], "KQ11": [...]} dict)
+        self._index_ohlcv: Optional[dict] = None
         # VKOSPI(변동성지수) — 시장 레짐 참고용, _scan_once()에서 스캔당 1회 갱신 (2026-08-24 추가)
         self._vkospi: Optional[dict] = None
         # 코스피200 지수선물 근월물 — 베이시스 참고용, _scan_once()에서 스캔당 1회 갱신 (2026-08-24 추가)
@@ -622,6 +628,65 @@ class RealtimeMonitor:
     # ── 1회 스캔 ─────────────────────────────────────────────────
     MAX_SCAN_SEC = 720  # 12분 예산 (timeout-minutes: 15 보다 3분 여유)
 
+    # ── 스캔 종료 요약 ───────────────────────────────────────────
+    # 신호 종류별 표시 순서 — 매수 계열이 위, 매도 계열이 아래 (중요도/행동 순)
+    _SUMMARY_ORDER = (
+        (SignalType.STRONG_BUY,  "🚀 강한매수"),
+        (SignalType.BUY,         "📈 매수"),
+        (SignalType.WATCH,       "🔍 관심"),
+        (SignalType.SELL,        "📉 매도"),
+        (SignalType.STRONG_SELL, "🔴 강한매도"),
+    )
+    SUMMARY_MAX_PER_GROUP = 15   # 그룹당 최대 표시 종목 수 (Slack 메시지 길이 방어)
+
+    def _send_scan_summary(self, scan_signals: dict, processed: int, total: int):
+        """스캔에서 나온 매수/매도/관심 신호를 한 메시지로 요약 전송 (2026-08-26 추가).
+
+        종목별 상세 알림은 쿨다운(alert_cooldown_sec)에 걸려 일부만 발송되지만, 이 요약은
+        **쿨다운과 무관하게 해당 스캔의 모든 비-HOLD 신호를 담는다** — 상세 알림 중복은
+        줄이면서(쿨다운 4시간) 전체 현황은 매 스캔 놓치지 않게 하려는 것이 도입 취지.
+        HOLD는 건수만 표시하고 종목은 나열하지 않음(요약의 목적이 흐려지므로).
+        """
+        groups: dict[SignalType, list] = {}
+        for sig in scan_signals.values():
+            if sig.signal_type == SignalType.HOLD:
+                continue
+            groups.setdefault(sig.signal_type, []).append(sig)
+
+        if not groups:
+            return  # 신호가 하나도 없으면 요약 자체를 생략 (매 스캔 "특이사항 없음" 스팸 방지)
+
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M")
+        signal_total = sum(len(v) for v in groups.values())
+        lines = [
+            f"📊 *스캔 요약* ({now_kst} KST)",
+            f"{processed}/{total}종목 스캔 · 신호 {signal_total}건 · 보유 {processed - signal_total}건",
+        ]
+
+        for stype, label in self._SUMMARY_ORDER:
+            items = groups.get(stype)
+            if not items:
+                continue
+            # 매수 계열은 점수 높은 순, 매도 계열은 점수 낮은 순으로 — 각 그룹에서 가장 강한 신호가 위로
+            reverse = stype in (SignalType.STRONG_BUY, SignalType.BUY, SignalType.WATCH)
+            items.sort(key=lambda s: s.score, reverse=reverse)
+
+            lines.append(f"\n*{label}* ({len(items)})")
+            for sig in items[:self.SUMMARY_MAX_PER_GROUP]:
+                day_pct = (sig.indicators or {}).get("day_return", 0.0) * 100
+                lines.append(
+                    f"• {sig.name or sig.ticker} ({sig.ticker}) · "
+                    f"{sig.current_price:,}원 · {day_pct:+.1f}% · 점수 {sig.score:+.2f}"
+                )
+            if len(items) > self.SUMMARY_MAX_PER_GROUP:
+                lines.append(f"  … 외 {len(items) - self.SUMMARY_MAX_PER_GROUP}종목")
+
+        try:
+            self._notifier.send_sync("\n".join(lines))
+        except Exception as e:
+            # 요약 실패가 스캔 자체를 망치면 안 됨 — 로그만 남기고 계속
+            logger.error(f"스캔 요약 전송 실패: {e}")
+
     def _scan_once(self):
         logger.info("=== 종목 스캔 시작 ===")
         scan_start = time.time()
@@ -753,6 +818,10 @@ class RealtimeMonitor:
             self._virtual.check_open_positions(scan_signals)
         except Exception as e:
             logger.error(f"가상매매 청산 체크 실패: {e}")
+
+        # 종목별 신호 한눈 요약 — 쿨다운과 무관하게 이번 스캔 전체 현황 전송 (2026-08-26)
+        if self._scan_summary:
+            self._send_scan_summary(scan_signals, processed, total)
 
         elapsed_total = time.time() - scan_start
         logger.info(

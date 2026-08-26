@@ -51,10 +51,11 @@ python run_monitor.py --watch 005930     # 추가 감시 종목
 | Slack 명령어 매매 | ❌ 상시 실행 불가 | ✅ 데몬으로 운영 가능 |
 | 비용 | 무료 (월 2,000분 한도) | 무료 (24/7 상시) |
 
-### OCI 자동 VM 생성 스크립트 (운영 중)
+### OCI 자동 VM 생성 스크립트 (⚠️ 2026-08-26 확인: 현재 비활성화 상태)
 - **파일**: `.github/workflows/oci_vm_create.yml`
-- **동작**: 15분마다 A1.Flex VM 생성 시도 → 용량 부족이면 조용히 종료, 성공하면 Slack 알림
-- **현재 상태**: 스크립트 정상 동작 확인, 도쿄 AD-1 용량 부족으로 대기 중
+- **동작(활성화 시)**: 15분마다 A1.Flex VM 생성 시도 → 용량 부족이면 조용히 종료, 성공하면 Slack 알림
+- **⚠️ 현재 상태**: `gh api repos/leeyonsei78/stock-monitor/actions/workflows/329230954` 조회 결과 `state: disabled_manually` — 2026-08-21 17:07 KST에 수동 비활성화됨(마지막 스케줄 실행 16:57 KST 직후), 이후 5일째 폴링 정지. 워크플로우 파일 자체는 그대로(cron 정의 남아있음)라 `gh workflow enable oci_vm_create.yml`로 즉시 재개 가능하나, 의도적 중단인지 실수인지 git/PR 이력에 근거가 없어 확인 안 됨 — 재개 여부는 사용자 판단 필요
+  - 스크립트 로직 자체는 이전에 정상 동작 확인됐고(아래), 도쿄 AD-1 용량 부족으로 대기 중이던 배경은 그대로
   - 오사카 fallback 시도했으나 무료 계정 리전 구독 제한(홈 리전 1개)으로 불가 (2026-08-10)
 - **OCI SDK 주의사항**:
   - 올바른 import: `oci.core.ComputeClient` (`oci.compute` 아님)
@@ -273,6 +274,7 @@ git push origin main
 - **자동매매 연동 지점**: `Portfolio.Position.stop_loss_pct/take_profit_pct`에 매수 시점 값을 저장(`add_position()` 파라미터) → `check_stop_loss/check_take_profit`가 종목별 값 사용. `OrderManager.buy()` → `AutoTrader._run_signal_scan()`까지 이미 배선 완료 (현재 `trading.mode: "manual"`이라 미실행 상태, 모드 전환 시 바로 동작)
   - 보유 중 신호 재계산 시에도 `SignalGenerator.generate(position_stop_loss_pct=, position_take_profit_pct=)`로 매수 당시 기준을 그대로 사용 (전역 고정값 아님)
   - **2026-08-24 버그 수정**: `TradeSignal.recommended_qty = int(budget/current_price)`에 최소 수량 보정이 없어 종목가가 종목당 예산(`max_budget_per_stock`, STRONG_BUY는 ×1.5)을 초과하면 0으로 계산되고, `AutoTrader._run_signal_scan()`이 이를 그대로 `OrderManager.buy(quantity=0, ...)`에 넘기던 문제 발견 → `OrderManager.buy()`에 `quantity<=0` 가드 추가로 차단 (현재 워치리스트·스크리닝 가격대에선 실제로 안 터졌지만 모드 전환/워치리스트 변경 시 재현 가능했음)
+  - **근본 원인 수정 (2026-08-26)**: 위 08-24 수정은 하류(`OrderManager.buy()`)에서 0수량 주문을 막는 가드였을 뿐, 계산 시점 자체(`signal_generator.py recommended_qty`)는 여전히 0을 반환해 "매수 자체가 스킵"되는 문제는 안 풀렸음 — `realtime_monitor._calc_recommendation`/`virtual_trader.open_if_new`엔 이미 있던 `max(1, ...)` 최소 1주 floor가 이 원천 계산에만 빠져 있던 걸 발견해 동일하게 적용. `int(budget/current_price)` → `max(1, int(budget/current_price)) if current_price > 0 else 0`
 
 ## 투자자 수급 가중치 (2026-08-21 재조정)
 | 투자자 | 가중치 | 비고 |
@@ -362,6 +364,7 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
     - **대체 데이터 소스(네이버 등 스크래핑) 검토 후 기각**: `finance.naver.com/item/frgn.naver`를 실제 장중(08.25 09:48 KST, 개장 48분 경과)에 fetch한 결과 최신 행이 여전히 전일(08.24)로, KIS와 동일한 지연 패턴 확인 — 외국인/기관 순매매는 KRX 계좌 구분 기준 사후 집계라 소스를 바꿔도 구조적으로 실시간이 안 됨(유료 실시간 체결 태깅 데이터 없이는 불가). **이 결론은 재검증 없이 재사용 가능**
     - **당일 데이터가 언제부터 신뢰 가능한가**: 위 확인대로 정규장 오후 3시 전후가 관측된 기준선(공식 스케줄은 아님, 날마다 달라질 수 있음) — 그 전에 뜨는 매수/매도/관심 신호는 기술적 지표(70%) + 수급 히스토리(추세, 수급의 절반)만으로 내려진 판단이고, 당일 수급 성분은 중립 처리된 상태. Slack 메시지엔 `investor_block`에 미집계 경고 문구로 항상 표시됨(시계 기준이 아니라 `is_stale` 플래그 기준이라 그날그날 실제 집계 시점에 정확히 맞음)
     - **그럼에도 가상매매는 미집계 구간에도 계속 진행** (`virtual_trader.py`, 2026-08-25, 사용자 지시): 미집계 구간을 건너뛰면 정규장 전반부(전체 거래시간의 절반 이상) 신호에 대한 검증 데이터가 영영 안 쌓여 로직 정교화 목적에 반함 — 대신 진입 시점이 미집계 상태였는지를 `stock_virtual_position.is_stale_entry`에 기록해 나중에 미집계 시점 진입과 정상 시점 진입의 성과를 나눠 비교할 수 있게 함 (아래 가상매매 섹션 참고)
+  - **`foreign_net_buy` AND조건도 같은 우회 구멍이 있었음 (2026-08-26 수정)**: 위 근본 수정은 `investor_analyzer.get_investor_score()`의 점수 계산 경로만 고쳤는데, `signal_generator._classify_signal()`의 `buy_conditions.foreign_net_buy` AND조건은 여전히 `inv_current["raw"]["foreign"]`(미집계 시 며칠 전 원시값)을 그대로 읽고 있어 점수 쪽의 중립 처리를 우회하고 있었음 — `is_stale_investor`일 때 이 조건을 "판정 보류(통과 처리)"하도록 수정, `foreign_net_buy: false`일 때의 `buy_reasons` 부가 문구에도 동일하게 `not is_stale_investor` 가드 추가. 현재 `strategy.yaml`은 `foreign_net_buy: false`라 실질 영향은 없었지만 재활성화 시 재발했을 결함
 
 ## OHLCV 데이터 주의사항
 - KIS 모의 API는 일봉 데이터(`inquire-daily-chartprice`) 미지원 → **FinanceDataReader**로 대체
@@ -378,6 +381,20 @@ Slack 메시지의 "투자자 동향" 블록에도 프로그램이 항상 0인 �
   - 수정 파일: `run_monitor_once.py` `is_market_open()`, `src/monitor/realtime_monitor.py` `_is_market_open()`
   - `requirements.txt`에 `holidays>=0.46` 추가 (대체공휴일 포함 버전)
 - **휴장일 데이터 특성**: KIS API는 휴장일에 전 종목 마지막 거래일 데이터를 그대로 반환함 → 데이터가 실제처럼 보이지만 전일 종가·수급 기준이므로 신호 무의미
+
+### naive `datetime.now()` 호스트 타임존 버그 — 같은 유형이 파일별로 반복 발견됨
+GitHub Actions 러너가 UTC 호스트라 `ZoneInfo`/`astimezone(KST)` 없이 쓴 `datetime.now()`는 전부 KST가 아닌 UTC 기준으로 동작함 — 위 공휴일 버그(`is_market_open`)와 같은 계열의 버그가 이후에도 계속 파일 단위로 하나씩 새로 발견되는 패턴이 이어지고 있음.
+- **2026-08-26 3건 수정** (`25bf658`):
+  - `kis_api.py get_daily_ohlcv`: FDR 조회 시작/종료일 계산에 naive `datetime.now()` 사용 → 장전 스캔(08:00~08:59 KST) 시 UTC 날짜가 하루 전으로 밀려 조회 범위가 어긋남 → `ZoneInfo("Asia/Seoul")` 명시
+  - `kis_api.py get_minute_ohlcv`: `FID_INPUT_HOUR_1`(분봉 조회 기준 시각) 파라미터에 naive `datetime.now()` 사용 → 정규장 스캔인데도 KIS에는 9시간 이른(장 시작 전) 시각으로 요청돼 분봉이 안 잡히고 분봉 모멘텀이 계속 "데이터부족"으로 저하될 수 있었음 → 동일하게 KST 명시
+  - `auto_trader.py _is_market_open/_is_weekday`: `realtime_monitor.py`는 이미 위 08-17 수정을 받았는데 `auto_trader.py`(현재 `trading.mode: manual`이라 미실행)만 naive `datetime.now()`가 남아있었음 → 동일하게 KST 명시
+- **2026-08-26 1건 추가 수정** (`2a490ea`, PR #1): `virtual_trader.py`가 같은 날 위 3건과 별도로(다른 세션) 발견·수정됨 — `astimezone()`을 인자 없이 호출해 호스트 로컬 타임존을 쓰고 있었음(`ZoneInfo(KST)` 자체를 안 쓴 게 아니라 인자 누락이라는 다른 실수 유형)
+  - `entry_kst`/`now_kst`: 가상매매 청산 Slack 메시지에 "KST"라고 라벨된 시각이 실제로는 UTC로 표시되던 문제 → `astimezone(KST)` + 메시지 텍스트에도 "KST" 표기 추가(다른 Slack 타임스탬프들과 표기 관례 통일)
+  - `_trading_days_between`: UTC aware datetime을 변환 없이 바로 `.date()`로 비교 → 장전 스캔 진입 건이 보유일수 1거래일 더 카운트되던 문제 (`evaluate_signals.py`의 동일 목적 함수 `trading_days_since`는 애초에 `astimezone(KST)` 후 `.date()`라 이 문제가 없었음 — 이번에 동일 패턴으로 통일)
+- **검토 후 남겨둔 항목 (2026-08-26 리뷰, 미수정)**: 전체 코드베이스에서 naive `datetime.now()`/`.astimezone()`/`date.today()`를 스윕한 결과 아래는 낮은 우선순위로 판단해 그대로 둠 — 필요해지면 후속 조치
+  - `api/routers/stocks.py`(Vercel 대시보드용 FastAPI 백엔드, `08-06` 추가): OHLCV 조회 범위에 naive `datetime.now()` 사용 — 다만 이 백엔드는 아직 어느 서버에도 배포 안 됨(Oracle VM 이전 대기 중), VM 전환 체크리스트 2단계에서 VM 자체를 `sudo timedatectl set-timezone Asia/Seoul`로 설정할 계획이라 실제 배포되면 naive `datetime.now()`가 오히려 KST와 일치해 버그가 아닐 가능성 있음 — VM 배포 시점에 재확인 필요
+  - `backtest_technical_score.py`/`backtest_trading_rules.py`: 백테스트 종료일 계산에 naive `datetime.now()` 사용 — `quarterly_backtest.yml`은 09:00 KST(=00:00 UTC) 실행이라 스케줄 실행 시점엔 날짜가 안 밀리고, 수동 `workflow_dispatch`로 00~09시 KST 사이에 실행해도 최대 하루 오차가 수백 거래일짜리 상관계수 분석에 미치는 영향은 미미함
+  - `realtime_monitor.py`의 나머지 naive `datetime.now()`(쿨다운 elapsed 계산, `run_monitor.py` 루프 로그용 시각): 전부 같은 프로세스 내 상대 시간차 계산이거나 로그 표시용이라 호스트 타임존과 무관하게 정확함 (전자는 두 `datetime.now()`의 차이만 쓰므로 오프셋이 상쇄되고, 후자는 값 자체를 판단 로직에 안 씀) — 다만 `run_monitor.py` 루프는 애초에 "로컬 실행(PC 켜둘 때)"용이라 KST 호스트에서만 돌리는 게 전제
 
 ## Supabase 테이블
 - `stock_signal_log`: 알림 쿨다운 관리 + 신호 성과 추적 (2026-08-21 컬럼 추가: `price_after_1d`, `return_1d_pct`, `price_after_3d`, `return_3d_pct`)
@@ -496,6 +513,7 @@ KIS `inquire-investor`(FHKST01010900)는 항상 "최근 30거래일"치만 반�
   2. `target_hit`: 현재가가 목표가 이상
   3. `reversal_sell`: 보유 중 해당 종목에 SELL/STRONG_SELL 신호 발생 (그 스캔에서 종목이 재조회된 경우만 감지 가능 — top-N에서 빠지면 다음 스캔까지 못 볼 수 있음)
   4. `timeout`: `config.yaml virtual_trading.max_hold_days`(기본 10거래일) 경과 — 목표/손절 둘 다 안 닿고 타임아웃되는 비율 자체가 "ATR 배수가 실제 변동성 대비 너무 넓다"는 진단 지표가 됨
+- **청산 시각/보유일수 KST 버그 수정 (2026-08-26, PR #1)**: `astimezone()`을 인자 없이 호출해 호스트 로컬 타임존(GitHub Actions=UTC)을 쓰고 있었음 — 청산 Slack 메시지의 "KST" 라벨이 실제로는 UTC 시각이었고, `_trading_days_between`도 KST 변환 없이 날짜 비교해 장전 진입 건 보유일수가 1거래일 더 카운트됨. `ZoneInfo("Asia/Seoul")` 명시로 수정, 상세는 위 "naive `datetime.now()` 호스트 타임존 버그" 참고
 - **Supabase 테이블**: `stock_virtual_position` (수동 SQL 생성 필요)
   ```sql
   create table stock_virtual_position (

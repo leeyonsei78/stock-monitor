@@ -37,8 +37,40 @@ def _safe_float(v, default: float = 0.0) -> float:
     return float(v)
 
 
+def _default_token_store():
+    """토큰 캐시용 SupabaseSignalStore를 자동 생성 (자격증명 없으면 None).
+
+    import는 함수 안에서 함 — supabase_store가 이 모듈을 import하지 않더라도,
+    최상단 import로 두면 KIS만 쓰는 경량 스크립트까지 supabase 패키지를 강제로
+    끌고 오게 되므로 지연 로딩한다. 실패 시에도 절대 예외를 올리지 않고 None을
+    반환해, 캐시를 못 붙이는 상황이 기존 동작(매번 발급)으로 안전하게 degrade되게 함.
+    """
+    url, key = os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        return None
+    try:
+        from src.monitor.supabase_store import SupabaseSignalStore
+        return SupabaseSignalStore(url, key)
+    except Exception as e:
+        logger.warning(f"토큰 캐시용 Supabase 연결 실패 — 캐시 없이 진행: {e}")
+        return None
+
+
 class KISApi:
-    def __init__(self, store=None):
+    def __init__(self, store=None, use_token_cache: bool = True):
+        """store: SupabaseSignalStore — KIS 액세스 토큰 캐싱용.
+
+        store를 안 넘기면 Supabase 자격증명(SUPABASE_URL/SUPABASE_KEY)이 환경에 있을 때
+        토큰 캐시 전용 store를 자동으로 붙인다 (2026-08-26 추가).
+
+        이유: 기존엔 기본값이 store=None이라 캐시를 안 쓰는 게 기본 동작이었고, 그러면
+        인스턴스를 새로 만들 때마다 `/oauth2/tokenP`로 토큰을 새로 발급함 — KIS는 토큰
+        발급에 1일 1회 제한 + 직전 발급 후 약 1분 내 재발급 시 403을 거는 단기 레이트리밋이
+        둘 다 걸려 있어서, 캐시 미사용이 기본값이면 로컬 검증 스크립트나 `src/main.py`,
+        `api/routers/trades.py`(둘 다 `KISApi()`로 생성)가 매번 한도를 갉아먹는다.
+        실제로 2026-08-26 검증 중 `KISApi(store=None)`을 짧은 간격으로 여러 번 띄우다
+        403을 맞아 발견됨. 캐시를 명시적으로 끄려면 `use_token_cache=False`를 넘길 것.
+        """
         with open("config/config.yaml", "r", encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)["kis"]
 
@@ -54,6 +86,8 @@ class KISApi:
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
         self._store = store  # SupabaseSignalStore — 토큰 Supabase 캐싱용
+        if self._store is None and use_token_cache:
+            self._store = _default_token_store()
 
         env = "모의투자" if self._is_mock else "실전투자"
         logger.info(f"KIS API 초기화 완료 [{env}] {self._base_url}")
@@ -521,11 +555,27 @@ class KISApi:
         return data
 
     # ── 종목 스크리닝 ────────────────────────────────────────────
-    def get_top_volume_stocks(self, market: str = "J", limit: int = 50) -> list[dict]:
+    # FID_INPUT_ISCD — 거래량 상위 조회의 시장/지수 범위 코드 (2026-08-26 실측 확인)
+    ISCD_ALL      = "0000"  # 전체 (상위권을 ETF/ETN이 점유해 실제 종목이 적게 잡힘)
+    ISCD_KOSPI    = "0001"
+    ISCD_KOSDAQ   = "1001"
+    ISCD_KOSPI200 = "2001"
+
+    def get_top_volume_stocks(self, market: str = "J", limit: int = 50,
+                              iscd: str = ISCD_ALL) -> list[dict]:
         """거래량 상위 종목 조회.
         FHPST01710000은 FID_COND_MRKT_DIV_CODE="J"만 지원 ("Q" 전달 시 API 오류).
-        FID_BLNG_CLS_CODE: "0"=전체(KOSPI+KOSDAQ 혼합) — "1"/"2"는 시장 구분이 아닌 종목등급 분류라 사용 불가.
+        FID_BLNG_CLS_CODE: "0"=전체 — "1"/"2"는 시장 구분이 아닌 종목등급 분류라 사용 불가.
         market 파라미터는 하위 호환 유지용으로만 수신, 실제 API 파라미터에 미사용.
+
+        iscd(FID_INPUT_ISCD)로 시장을 분리할 수 있음 (2026-08-26 실측 발견):
+        이 TR은 요청 파라미터와 무관하게 **항상 30행만** 반환하고 페이징도 없다
+        (tr_cont 헤더 빈 값, ctx_area 키 없음 — 실측 확인). 즉 limit>30은 무의미.
+        기본값 ISCD_ALL("0000")은 그 30칸의 절반 이상을 레버리지/인버스 ETF와 ETN이
+        차지해 스크리닝 후 실제 종목이 7개밖에 안 남았음(2026-08-26 실측). 반면
+        ISCD_KOSPI/ISCD_KOSDAQ로 나눠 2회 조회하면 각각 30행이 전부 실제 종목이라
+        합쳐서 26개가 통과한다. `FID_BLNG_CLS_CODE`로는 시장 분리가 불가능하다는
+        기존 확인(2026-08-20)은 이 파라미터와는 무관한 별개 사안.
         """
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/volume-rank",
@@ -533,7 +583,7 @@ class KISApi:
             {
                 "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_COND_SCR_DIV_CODE": "20171",
-                "FID_INPUT_ISCD": "0000",
+                "FID_INPUT_ISCD": iscd,
                 "FID_DIV_CLS_CODE": "0",
                 "FID_BLNG_CLS_CODE": "0",
                 "FID_TRGT_CLS_CODE": "111111111",

@@ -67,6 +67,11 @@ ETF_EXCLUDE_KEYWORDS = (
     "스팩",  # strategy.yaml screening.exclude_spac 반영 (2026-08-21)
 )
 
+# 워치리스트 중 코스닥 종목 — 상대강도 벤치마크를 KQ11로 쓰기 위한 구분 (2026-08-26)
+# 나머지 워치리스트 종목은 전부 코스피/ETF라 KS11 사용.
+# (get_current_price의 market_name으로 실측 확인된 값 — config.yaml watchlist 주석 참고)
+WATCHLIST_KOSDAQ_TICKERS = frozenset({"041190", "277810"})
+
 
 class RealtimeMonitor:
     """
@@ -504,7 +509,8 @@ class RealtimeMonitor:
         return "\n".join(blocks)
 
     # ── 단일 종목 분석 ────────────────────────────────────────────
-    def _analyze_stock(self, ticker: str, name: str, market: str = "J") -> Optional[TradeSignal]:
+    def _analyze_stock(self, ticker: str, name: str, market: str = "J",
+                       index_key: str = "KS11") -> Optional[TradeSignal]:
         try:
             current_info = self._api.get_current_price(ticker, market=market)
             ohlcv        = self._api.get_daily_ohlcv(ticker, period=120)
@@ -541,7 +547,9 @@ class RealtimeMonitor:
                 investor_current=investor_current,
                 investor_history=investor_hist,
                 realtime_price=current_info.get("price", 0),
-                index_ohlcv=self._index_ohlcv,
+                # 종목 소속 시장에 맞는 벤치마크 (코스피=KS11 / 코스닥=KQ11, 2026-08-26)
+                # 조회 실패한 지수는 None이라 상대강도가 중립(0.0)으로 degrade됨 — 기존 동작과 동일
+                index_ohlcv=(self._index_ohlcv or {}).get(index_key),
             )
         except Exception as e:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
@@ -619,12 +627,16 @@ class RealtimeMonitor:
         scan_start = time.time()
 
         # 지수 대비 상대강도 계산용 — 스캔 1회당 1번만 조회 (종목마다 재조회하지 않음)
-        # 코스피/코스닥 구분 없이 전 종목에 KS11 사용 (거래량 상위 결과에서 시장 구분 불가, 2026-08-20 확인 사항과 동일한 제약)
-        try:
-            self._index_ohlcv = self._api.get_daily_ohlcv("KS11", period=30)
-        except Exception as e:
-            logger.warning(f"코스피 지수 데이터 조회 실패 — 상대강도 신호 비활성화: {e}")
-            self._index_ohlcv = None
+        # 종목의 소속 시장에 맞는 벤치마크를 쓴다 (2026-08-26): 예전엔 거래량 상위 결과에서
+        # 시장 구분이 불가능해 코스닥 종목까지 전부 KS11로 비교하는 근사치를 썼는데,
+        # FID_INPUT_ISCD로 코스피/코스닥을 나눠 조회하게 되면서 정확한 벤치마크 사용이 가능해짐.
+        self._index_ohlcv = {}
+        for key, idx in (("KS11", "KS11"), ("KQ11", "KQ11")):
+            try:
+                self._index_ohlcv[key] = self._api.get_daily_ohlcv(idx, period=30)
+            except Exception as e:
+                logger.warning(f"{idx} 지수 데이터 조회 실패 — 해당 시장 상대강도 비활성화: {e}")
+                self._index_ohlcv[key] = None
 
         # VKOSPI(변동성지수) — 스캔 1회당 1번만 조회, 시장 레짐 참고용 (2026-08-24 추가)
         try:
@@ -650,38 +662,55 @@ class RealtimeMonitor:
         for ticker in self._watchlist:
             market = self._watchlist_markets.get(ticker, "J")
             name = self._watchlist_names.get(ticker, "")
-            stocks.append({"ticker": ticker, "name": name, "market": market})
+            # 워치리스트는 종목이 고정이라 소속 시장을 미리 안다 — 코스닥 2종목만 KQ11 벤치마크
+            index_key = "KQ11" if ticker in WATCHLIST_KOSDAQ_TICKERS else "KS11"
+            stocks.append({"ticker": ticker, "name": name, "market": market, "index": index_key})
 
         watchlist_tickers = {s["ticker"] for s in stocks}
-        # FID_BLNG_CLS_CODE "1"/"2"는 시장 구분이 아닌 종목등급 코드라 KOSPI/KOSDAQ 분리 불가 (2026-08-20 확인)
-        # 전체(=0) 한 번 조회 후 ETF 키워드 + isdigit 필터링으로 scan_top_n개 확보
+        # 거래량 상위를 코스피/코스닥으로 나눠 조회 (2026-08-26 수정)
+        # 기존엔 FID_INPUT_ISCD="0000"(전체) 1회 조회 + limit=100이었는데, 이 TR은 요청과 무관하게
+        # 항상 30행만 주고(페이징 없음) 그 30칸의 절반 이상을 레버리지/인버스 ETF·ETN이 차지해
+        # 스크리닝 통과가 7개뿐이었음(목표 30개) — 실측으로 발견. 시장별로 나누면 각 30행이 전부
+        # 실제 종목이라 합계 26개가 통과한다. 부수효과로 종목별 소속 시장을 알 수 있어 상대강도
+        # 벤치마크(KS11/KQ11)를 정확히 매칭할 수 있음.
+        # 주의: 여기서 얻은 시장 구분은 벤치마크 선택에만 쓰고 API 호출용 market 코드로는 쓰지 않는다 —
+        # get_current_price(FHKST01010100)는 "Q"를 아예 안 받고 코스닥 종목도 "J"로 정상 조회됨
+        # (2026-08-24 확인, 2026-08-26 코스닥 3종목으로 재확인).
         scr = self._screening
         min_price     = scr.get("min_price", 0)
         max_price     = scr.get("max_price", float("inf"))
         min_volume    = scr.get("min_volume", 0)
         min_market_cap = scr.get("min_market_cap", 0)
-        try:
-            added = 0
-            for s in self._api.get_top_volume_stocks(market="J", limit=100):
-                if added >= self._scan_top_n:
-                    break
-                if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
-                    if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
-                        continue
-                    # 시가총액/가격/거래량 스크리닝 — strategy.yaml screening 섹션 (2026-08-21, 기존엔 미연결 상태였음)
-                    # exclude_etf는 여기 적용 안 함: 국내 섹터 ETF(반도체/2차전지 등)는 의도적으로 유지 (위 ETF_EXCLUDE_KEYWORDS 참고)
-                    if not (min_price <= s["price"] <= max_price):
-                        continue
-                    if s["volume"] < min_volume:
-                        continue
-                    if s.get("market_cap", 0) < min_market_cap:
-                        continue
-                    stocks.append({"ticker": s["ticker"], "name": s["name"], "market": "J"})
-                    watchlist_tickers.add(s["ticker"])
-                    added += 1
-            logger.info(f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개)")
-        except Exception as e:
-            logger.error(f"거래량 상위 조회 실패: {e}")
+        added = 0
+        for iscd, index_key, label in (
+            (KISApi.ISCD_KOSPI,  "KS11", "코스피"),
+            (KISApi.ISCD_KOSDAQ, "KQ11", "코스닥"),
+        ):
+            if added >= self._scan_top_n:
+                break  # 앞 시장에서 이미 정원이 찼으면 조회 자체를 생략 (불필요한 API 호출 방지)
+            try:
+                for s in self._api.get_top_volume_stocks(market="J", limit=30, iscd=iscd):
+                    if added >= self._scan_top_n:
+                        break
+                    if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
+                        if any(kw in s["name"] for kw in ETF_EXCLUDE_KEYWORDS):
+                            continue
+                        # 시가총액/가격/거래량 스크리닝 — strategy.yaml screening 섹션 (2026-08-21, 기존엔 미연결 상태였음)
+                        # exclude_etf는 여기 적용 안 함: 국내 섹터 ETF(반도체/2차전지 등)는 의도적으로 유지 (위 ETF_EXCLUDE_KEYWORDS 참고)
+                        if not (min_price <= s["price"] <= max_price):
+                            continue
+                        if s["volume"] < min_volume:
+                            continue
+                        if s.get("market_cap", 0) < min_market_cap:
+                            continue
+                        stocks.append({"ticker": s["ticker"], "name": s["name"],
+                                       "market": "J", "index": index_key})
+                        watchlist_tickers.add(s["ticker"])
+                        added += 1
+            except Exception as e:
+                # 시장별로 독립 처리 — 한쪽이 실패해도 다른 쪽은 계속 (2026-08-14 코스피/코스닥 분리 원칙과 동일)
+                logger.error(f"거래량 상위 조회 실패({label}): {e}")
+        logger.info(f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개)")
 
         total      = len(stocks)
         buy_count  = 0
@@ -702,7 +731,8 @@ class RealtimeMonitor:
                 break
 
             try:
-                sig = self._analyze_stock(stock["ticker"], stock["name"], stock.get("market", "J"))
+                sig = self._analyze_stock(stock["ticker"], stock["name"], stock.get("market", "J"),
+                                          stock.get("index", "KS11"))
                 if sig is None:
                     skipped += 1
                 else:

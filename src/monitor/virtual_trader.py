@@ -9,6 +9,7 @@ evaluate_signals.py(1일/3일 후 단순 가격 스냅샷 비교)와는 목적�
 "신호 자체가 틀렸다"를 구분할 수 있다 (2026-08-24 설계).
 """
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 import yaml
 import holidays as kr_cal
@@ -19,6 +20,7 @@ from src.analysis.signal_generator import TradeSignal, SignalType
 from src.utils.logger import setup_logger
 
 logger = setup_logger("virtual_trader")
+KST = ZoneInfo("Asia/Seoul")
 
 EXIT_REASON_LABEL = {
     "target_hit": "목표가 도달 (익절)",
@@ -29,9 +31,13 @@ EXIT_REASON_LABEL = {
 
 
 def _trading_days_between(start: datetime, end: datetime) -> int:
-    """KST 거래일 기준 경과일수 (주말·공휴일 제외) — evaluate_signals.py trading_days_since와 동일 패턴"""
-    start_d = start.date()
-    end_d = end.date()
+    """KST 거래일 기준 경과일수 (주말·공휴일 제외) — evaluate_signals.py trading_days_since와 동일 패턴.
+    start/end는 UTC aware datetime — KST로 변환 후 날짜를 뽑아야 함 (2026-08-26 수정): 변환 없이
+    바로 .date()를 쓰면 장전 스캔(08:00~08:59 KST = 전일 23:00~24:00 UTC) 진입 건이 UTC 날짜로는
+    하루 이른 날짜로 계산되어 보유일수가 실제보다 1거래일 더 카운트되던 문제 (evaluate_signals.py
+    trading_days_since는 애초에 astimezone(KST) 후 .date()라 이 문제가 없었음)"""
+    start_d = start.astimezone(KST).date()
+    end_d = end.astimezone(KST).date()
     kr_holidays = kr_cal.KR(years=list(range(start_d.year, end_d.year + 1)))
     count = 0
     d = start_d
@@ -169,8 +175,11 @@ class VirtualTrader:
 
         self._store.close_virtual_position(pos["id"], exit_price, exit_reason, return_pct, hold_days)
 
-        entry_kst = entry_at.astimezone().strftime("%Y-%m-%d %H:%M")
-        now_kst = now.astimezone().strftime("%Y-%m-%d %H:%M")
+        # astimezone() 인자 없이 호출하면 실행 호스트의 로컬 타임존으로 변환됨(KST 고정 아님) —
+        # 현재 운영 중인 GitHub Actions 러너는 UTC 호스트라 "KST"라고 라벨된 시각이 실제로는
+        # UTC로 표시되던 문제 (2026-08-26 수정, kis_api.py/auto_trader.py의 동일 유형 수정과 동일 원인)
+        entry_kst = entry_at.astimezone(KST).strftime("%Y-%m-%d %H:%M")
+        now_kst = now.astimezone(KST).strftime("%Y-%m-%d %H:%M")
         msg = (
             f"💰 *[가상매매 청산] {pos['name']} ({pos['ticker']})*\n"
             f"진입: {entry_kst} @ {entry_price:,}원 ({pos['qty']}주, {pos['signal_type']} 신호 기준)\n"

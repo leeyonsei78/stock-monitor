@@ -97,6 +97,16 @@ class RealtimeMonitor:
         self._screening       = strategy_cfg.get("screening", {})
 
         self._store    = store  # SupabaseSignalStore or None (in-memory fallback)
+        if self._store is not None:
+            # 2026-08-27 수정: run_monitor_once.py 등 호출부가 SupabaseSignalStore(url, key)를
+            # cooldown_sec 없이 생성해 그 기본값(1800초=30분)이 그대로 쓰이고 있었음 — 어젯밤
+            # config.yaml의 alert_cooldown_sec을 1800→14400(4시간)으로 올린 수정이 실제 쿨다운
+            # 판정(store.should_alert())엔 전혀 반영되지 않던 상태(self._cooldown_sec는 Slack
+            # 표시 문구와 in-memory 폴백에만 쓰였음). 8/27 실전 로그로 발견 — 13:07 KST 알림이
+            # 13:10(3분 후, 1800초 이내)엔 억제됐지만 14:05(58분 후, 1800초 초과·14400초 미만)엔
+            # 동일 종목·동일 신호타입인데도 재발송됨. config.yaml을 유일한 기준으로 삼기 위해
+            # store가 어떤 cooldown_sec으로 생성됐든 여기서 강제로 맞춤
+            self._store._cooldown_sec = self._cooldown_sec
         self._api      = KISApi(store=store)
         self._signal   = SignalGenerator()
         self._notifier = SlackNotifier()

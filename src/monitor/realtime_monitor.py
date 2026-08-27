@@ -639,7 +639,7 @@ class RealtimeMonitor:
     )
     SUMMARY_MAX_PER_GROUP = 15   # 그룹당 최대 표시 종목 수 (Slack 메시지 길이 방어)
 
-    def _send_scan_summary(self, scan_signals: dict, processed: int, total: int):
+    def _send_scan_summary(self, scan_signals: dict, total: int):
         """스캔에서 나온 매수/매도/관심 신호를 한 메시지로 요약 전송 (2026-08-26 추가).
 
         종목별 상세 알림은 쿨다운(alert_cooldown_sec)에 걸려 일부만 발송되지만, 이 요약은
@@ -658,9 +658,13 @@ class RealtimeMonitor:
 
         now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M")
         signal_total = sum(len(v) for v in groups.values())
+        # 2026-08-27 수정: 분모를 processed(스킵/오류 포함 "시도한" 종목 수)가 아니라
+        # len(scan_signals)(실제로 신호가 나온, 즉 분석에 성공한 종목 수)로 바꿈 — processed를
+        # 쓰면 스킵(데이터 부족)·오류 종목까지 "보유"로 잘못 집계돼 보유 건수가 부풀려졌었음
+        analyzed = len(scan_signals)
         lines = [
             f"📊 *스캔 요약* ({now_kst} KST)",
-            f"{processed}/{total}종목 스캔 · 신호 {signal_total}건 · 보유 {processed - signal_total}건",
+            f"{analyzed}/{total}종목 분석 · 신호 {signal_total}건 · 보유 {analyzed - signal_total}건",
         ]
 
         for stype, label in self._SUMMARY_ORDER:
@@ -821,7 +825,7 @@ class RealtimeMonitor:
 
         # 종목별 신호 한눈 요약 — 쿨다운과 무관하게 이번 스캔 전체 현황 전송 (2026-08-26)
         if self._scan_summary:
-            self._send_scan_summary(scan_signals, processed, total)
+            self._send_scan_summary(scan_signals, total)
 
         elapsed_total = time.time() - scan_start
         logger.info(

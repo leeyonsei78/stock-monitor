@@ -1,23 +1,29 @@
-"""KRX 공개데이터 — 공매도 비중 조회 (2026-08-28 추가)
+"""KRX 공개데이터 — 공매도 비중 조회 (2026-08-28 추가, 2026-08-28 재확인)
 
-KIS Open API는 공매도 데이터를 제공하지 않아 pykrx(비공식 KRX 데이터 래퍼, API 키 불필요)를
-사용한다. 목적: 외국인/기관 순매수만으로 하락압력을 추정하던 기존 수급 분석을 보완 — 특히
-당일 투자자 데이터가 미집계인 오전 시간대(위 investor_analyzer 참고)에 공매도 비중은 그 시점에도
+목적: 외국인/기관 순매수만으로 하락압력을 추정하던 기존 수급 분석을 보완 — 특히 당일
+투자자 데이터가 미집계인 오전 시간대(위 investor_analyzer 참고)에 공매도 비중은 그 시점에도
 이미 공표돼 있어 대체 참고자료가 됨.
 
-공매도 관련 KRX 데이터는 보통 당일 장중 실시간이 아니라 D+1 공표라, 조회 시점에 "오늘" 데이터가
-아직 없을 수 있다 — 최근 며칠을 거슬러 올라가며 가장 최근 공표된 날짜의 값을 쓰고, 그 날짜를
-같이 반환해 "며칠 전 기준인지" 항상 알 수 있게 한다.
+⚠️ **2026-08-28 GitHub Actions 드라이런 3회로 실측 확인된 중요 사실 (최초 작성 시 "API 키
+불필요"라고 적었던 것은 틀렸음)**: pykrx 1.2.8의 `get_shorting_volume_top50()`은 未来
+날짜뿐 아니라 확실한 과거 실거래일(2024-01-02)에도 예외 없이 계속 빈 응답만 반환했음 —
+로그에 매번 함께 찍힌 `KRX 로그인 실패: KRX_ID 또는 KRX_PW 환경 변수가 설정되지 않았습니다`
+로 원인 확인. pykrx 패키지 메타데이터(METADATA)에 "KRX 로그인이 필요한 API를 사용하려면
+KRX_ID/KRX_PW 환경변수가 **필수**"라고 명시돼 있음 — 이 함수는 인증이 필요한 공매도 관련
+API였고, DART_API_KEY 같은 발급형 API 키가 아니라 **사용자의 실제 KRX 회원 로그인 ID/비밀번호**
+그 자체를 요구함. GitHub Actions에 개인 로그인 자격증명을 올려 무인 자동화로 매 스캔마다
+로그인시키는 것은 DART_API_KEY(scope가 좁은 발급형 키)와는 보안 성격이 다른 결정이라, 이
+세션에서 임의로 추가하지 않았음 — 실제로 쓸지는 사용자가 판단할 것.
+
+**현재 상태**: KRX_ID/KRX_PW 미설정 시(기본 상태) 이 함수 호출 자체는 항상 빈 dict를 반환 —
+스캔에는 영향 없지만 공매도 비중 기능은 사실상 비활성 상태와 같음. 아래 `_RATIO_COLUMN_CANDIDATES`는
+실제 pykrx 소스(`get_shorting_volume_top50` docstring)로 컬럼명 자체는 확인해둠(`공매도비중`) —
+로그인만 되면 정상 동작할 것으로 예상되나 실제 인증 성공 케이스는 검증 못 함.
 
 아직 신호 점수엔 반영하지 않고 정보성 표시 + DB 기록만 함(VKOSPI/코스피200선물과 동일 원칙).
-
-⚠️ 이 모듈은 개발 환경(네트워크가 일부 도메인만 허용된 샌드박스)에서 실제 KRX 서버 호출을
-검증하지 못한 상태로 작성됨 — pykrx의 정확한 반환 컬럼명은 문서/기억에 의존했고 실측 확인은
-안 됨. 배포 전 GitHub Actions workflow_dispatch로 반드시 드라이런 검증할 것. 컬럼명이 다르면
-아래 _RATIO_COLUMN_CANDIDATES에 못 찾은 컬럼 목록이 WARNING 로그로 남으므로 그걸로 수정할 것.
-실패해도 예외를 올리지 않고 빈 dict를 반환해 나머지 스캔에 영향 없음.
 """
 from __future__ import annotations
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,8 +31,10 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("krx_data")
 
-# pykrx 버전에 따라 컬럼명이 다를 수 있어 후보를 여러 개 둠 — 실측 확인 후 실제 컬럼명만 남길 것
-_RATIO_COLUMN_CANDIDATES = ("비중", "공매도비중", "숏비율", "공매도 비중(%)")
+# 2026-08-28 실측(pykrx 1.2.8 소스 get_shorting_volume_top50 docstring)으로 확인된 실제 컬럼명.
+# 그래도 pykrx 버전에 따라 바뀔 수 있어 옛 추측값들을 후보로 남겨둠 — 전부 안 맞으면 WARNING 로그의
+# 실제 컬럼 목록으로 갱신할 것.
+_RATIO_COLUMN_CANDIDATES = ("공매도비중", "비중", "숏비율", "공매도 비중(%)")
 
 
 def get_short_interest_ratios(lookback_days: int = 5) -> dict[str, dict]:
@@ -35,26 +43,20 @@ def get_short_interest_ratios(lookback_days: int = 5) -> dict[str, dict]:
     반환: {ticker(6자리): {"ratio": float(%), "date": "YYYYMMDD"}}
     상위 50위 밖 종목은 결과에 아예 없음 — "공매도 비중이 두드러지지 않는다"는 뜻으로 해석할 것,
     "0%"과 동일시하지 말 것(진짜 0%인지 그냥 순위 밖인지 이 함수만으로는 구분 불가).
+
+    KRX_ID/KRX_PW 미설정 시 pykrx가 인증 없이 빈 응답만 반환(위 모듈 docstring 참고) — 매 스캔마다
+    최대 10회(5일×2시장) 헛수고 호출을 반복하지 않도록 여기서 먼저 체크하고 건너뜀.
     pykrx 미설치·네트워크 오류·응답 스키마 변경 등 무엇이 실패하든 예외를 올리지 않고 빈 dict 반환.
     """
+    if not (os.getenv("KRX_ID") and os.getenv("KRX_PW")):
+        logger.info("KRX_ID/KRX_PW 미설정 — 공매도 비중 조회 건너뜀 (pykrx가 이 API에 KRX 회원 로그인을 요구함)")
+        return {}
+
     try:
         from pykrx import stock as krx_stock
     except ImportError:
         logger.warning("pykrx 미설치 — 공매도 비중 조회 건너뜀 (requirements.txt 확인)")
         return {}
-
-    # 임시 진단 로그 (2026-08-28) — 최근 5일이 전부 빈 응답으로 나오는 원인이 "이 환경의 실제
-    # 서버 달력이 이 프로젝트가 쓰는 미래 날짜를 아직 모르는 것"인지, 다른 파라미터 문제인지
-    # 구분하기 위해 확실히 과거인 실제 거래일(2024-01-02, 코스피 첫 거래일)로 한 번 찔러봄.
-    # 원인 확인되면 이 블록은 제거할 것.
-    try:
-        diag_df = krx_stock.get_shorting_volume_top50("20240102", "KOSPI")
-        logger.info(
-            f"[진단] 확실한 과거일(20240102) 조회 결과: "
-            f"{'빈 응답' if diag_df is None or diag_df.empty else f'{len(diag_df)}행, 컬럼={list(diag_df.columns)}'}"
-        )
-    except Exception as e:
-        logger.info(f"[진단] 확실한 과거일(20240102) 조회 중 예외: {type(e).__name__}: {e}")
 
     now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
     for delta in range(lookback_days):
@@ -65,12 +67,10 @@ def get_short_interest_ratios(lookback_days: int = 5) -> dict[str, dict]:
             try:
                 df = krx_stock.get_shorting_volume_top50(strdate, market)
             except Exception as e:
-                # 2026-08-28 실측: 이전엔 DEBUG였는데 config.yaml logging.level이 기본 INFO라
-                # 실제 실패 사유가 로그에 아예 안 남아 원인 진단이 안 됐음 — WARNING으로 상향
                 logger.warning(f"공매도 상위50 조회 실패 [{strdate}/{market}]: {e}")
                 continue
             if df is None or df.empty:
-                logger.info(f"공매도 상위50 응답 비어있음 [{strdate}/{market}] (휴장일이거나 미공표 가능)")
+                logger.info(f"공매도 상위50 응답 비어있음 [{strdate}/{market}] (휴장일·미공표이거나 KRX 인증 실패)")
                 continue
             got_any = True
             ratio_col = next((c for c in _RATIO_COLUMN_CANDIDATES if c in df.columns), None)
@@ -92,5 +92,5 @@ def get_short_interest_ratios(lookback_days: int = 5) -> dict[str, dict]:
             if merged:
                 logger.info(f"공매도 비중 데이터 {len(merged)}종목 확보 (기준일 {strdate})")
             return merged
-    logger.warning(f"공매도 비중 조회 — 최근 {lookback_days}일 전부 데이터 없음")
+    logger.warning(f"공매도 비중 조회 — 최근 {lookback_days}일 전부 데이터 없음(KRX 인증 실패 가능성 높음)")
     return {}

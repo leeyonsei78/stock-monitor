@@ -48,4 +48,9 @@ jobs:
           # 당일 공시 조회용 (2026-08-28 추가, 선택) — 미설정 시 공시 조회만 조용히 건너뜀
           # (opendart.fss.or.kr에서 무료 발급, GitHub Secrets에 DART_API_KEY로 등록 필요)
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          # 공매도 비중 조회용 (2026-08-28 추가, 선택) — pykrx가 KRX 회원 로그인을 요구함
+          # (data.krx.co.kr 회원가입 시 발급되는 실제 로그인 ID/PW, API 키 아님)
+          # 미설정 시 공매도 비중 조회만 조용히 건너뜀 — 값 자체는 GitHub Actions가 로그에서 자동 마스킹
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
         run: .venv/bin/python run_monitor_once.py

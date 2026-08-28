@@ -52,9 +52,12 @@ def get_short_interest_ratios(lookback_days: int = 5) -> dict[str, dict]:
             try:
                 df = krx_stock.get_shorting_volume_top50(strdate, market)
             except Exception as e:
-                logger.debug(f"공매도 상위50 조회 실패 [{strdate}/{market}]: {e}")
+                # 2026-08-28 실측: 이전엔 DEBUG였는데 config.yaml logging.level이 기본 INFO라
+                # 실제 실패 사유가 로그에 아예 안 남아 원인 진단이 안 됐음 — WARNING으로 상향
+                logger.warning(f"공매도 상위50 조회 실패 [{strdate}/{market}]: {e}")
                 continue
             if df is None or df.empty:
+                logger.info(f"공매도 상위50 응답 비어있음 [{strdate}/{market}] (휴장일이거나 미공표 가능)")
                 continue
             got_any = True
             ratio_col = next((c for c in _RATIO_COLUMN_CANDIDATES if c in df.columns), None)

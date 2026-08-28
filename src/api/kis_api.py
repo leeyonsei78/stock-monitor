@@ -361,16 +361,21 @@ class KISApi:
             except Exception as e:
                 logger.warning(f"해외 지수·환율 조회 실패 [{ticker}]: {e}")
                 return None
-            if df is None or len(df) < 2:
+            if df is None or df.empty:
                 return None
-            price = float(df["Close"].iloc[-1])
-            prev_close = float(df["Close"].iloc[-2])
+            # USD/KRW 등은 행이 NaN Close로 올 수 있음(2026-08-28 실측 확인: 드라이런에서
+            # change_pct가 nan으로 나옴) — dropna 후 최소 2개 유효행이 있어야 등락률 계산
+            closes = df["Close"].dropna()
+            if len(closes) < 2:
+                return None
+            price = float(closes.iloc[-1])
+            prev_close = float(closes.iloc[-2])
             if prev_close <= 0:
                 return None
             return {
                 "price": price,
                 "change_pct": (price - prev_close) / prev_close * 100,
-                "date": df.index[-1].strftime("%Y%m%d"),
+                "date": closes.index[-1].strftime("%Y%m%d"),
             }
 
         return {

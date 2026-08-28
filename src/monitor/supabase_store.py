@@ -38,8 +38,12 @@ class SupabaseSignalStore:
             return True  # 오류 시 알림 허용
 
     # 최근 추가된 컬럼 — 마이그레이션 전이면 insert가 실패할 수 있어 save_signal()에서
-    # 폴백 대상으로 취급 (2026-08-24, watch_blocked_by는 2026-08-25 추가)
-    _OPTIONAL_SIGNAL_COLUMNS = ("vkospi", "futures_basis", "watch_blocked_by")
+    # 폴백 대상으로 취급 (2026-08-24, watch_blocked_by는 2026-08-25 추가, sp500_change_pct/
+    # usdkrw_change_pct/short_interest_ratio/has_disclosure는 2026-08-28 추가)
+    _OPTIONAL_SIGNAL_COLUMNS = (
+        "vkospi", "futures_basis", "watch_blocked_by",
+        "sp500_change_pct", "usdkrw_change_pct", "short_interest_ratio", "has_disclosure",
+    )
 
     def save_signal(
         self,
@@ -52,6 +56,10 @@ class SupabaseSignalStore:
         vkospi: Optional[float] = None,
         futures_basis: Optional[float] = None,
         watch_blocked_by: Optional[list[str]] = None,
+        sp500_change_pct: Optional[float] = None,
+        usdkrw_change_pct: Optional[float] = None,
+        short_interest_ratio: Optional[float] = None,
+        has_disclosure: Optional[bool] = None,
     ):
         row = {
             "ticker": ticker,
@@ -73,6 +81,16 @@ class SupabaseSignalStore:
         # 게이트별 성과를 통계로 분리하기 위함 (2026-08-25 추가, signal_generator._classify_signal 참고)
         if watch_blocked_by:
             row["watch_blocked_by"] = ",".join(watch_blocked_by)
+        # 해외 지수·환율/공매도 비중/당일 공시 여부 — 전부 정보성 기록만, 아직 점수엔 미반영
+        # (VKOSPI/선물 베이시스와 동일 원칙, 2026-08-28 추가)
+        if sp500_change_pct is not None:
+            row["sp500_change_pct"] = sp500_change_pct
+        if usdkrw_change_pct is not None:
+            row["usdkrw_change_pct"] = usdkrw_change_pct
+        if short_interest_ratio is not None:
+            row["short_interest_ratio"] = short_interest_ratio
+        if has_disclosure is not None:
+            row["has_disclosure"] = has_disclosure
 
         try:
             self._client.table("stock_signal_log").insert(row).execute()

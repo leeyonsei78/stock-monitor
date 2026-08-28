@@ -605,12 +605,16 @@ SLACK_TRADE_ALLOWED_USERS=U012345,U067890   # 매수/매도/취소 허용 Slack 
 
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_KEY=sb_secret_...
+
+# 당일 공시 조회 (2026-08-28 추가, 선택 — 미설정 시 공시 조회만 조용히 건너뜀)
+DART_API_KEY=...   # https://opendart.fss.or.kr 무료 가입 후 발급
 ```
 
 ## GitHub Secrets (Actions용 — VM 이전 후 불필요)
 `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_ACCOUNT_NO`,
 `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`,
-`SUPABASE_URL`, `SUPABASE_KEY`
+`SUPABASE_URL`, `SUPABASE_KEY`,
+`DART_API_KEY` (2026-08-28 추가, 선택 — 미등록 시 공시 조회만 건너뜀, 나머지 정상 동작)
 
 ---
 
@@ -624,6 +628,8 @@ C:\test_stock_auto\
 │   └── strategy.yaml       # 매매 신호 기준
 └── src/
     ├── api/kis_api.py       # KIS API 래퍼 (시세는 실서버, 주문은 모의서버)
+    │   ├── krx_data.py      # KRX 공매도 비중 조회 (pykrx, 2026-08-28 추가)
+    │   └── dart_api.py      # DART 당일 공시 종목 조회 (2026-08-28 추가)
     ├── analysis/
     │   ├── technical_indicators.py   # RSI/MACD/볼린저/이평선/분봉모멘텀
     │   ├── investor_analyzer.py      # 외국인/기관/개인/프로그램 분석
@@ -685,6 +691,64 @@ C:\test_stock_auto\
 - **당일 투자자 데이터 미집계 중립 처리 정상 동작**: 전 종목 `당일=0.000(미집계→중립 처리)` 확인 (장 시작 직후라 예상된 상태)
 - **`stale_data_override`(당일 급락 시 매도, 위 신호 점수 체계 참고)가 종합점수 양수인 종목에도 발동하는 사례를 실측으로 처음 확인**: 실리콘투(`257720`) 당일-5.89%에 종합점수 **+0.217**로 매도, 에이팩트(`200470`) 당일-9.85%에 종합점수 **+0.083**으로 매도 — 둘 다 미집계 상태라 히스토리/추세 성분(수급 점수 +0.325/+0.426)이 당일 급락과 반대 방향으로 작용해 종합점수가 순양수인데도 오버라이드가 그대로 SELL 발동시킴. 설계 의도(당일 급락은 종합점수 무관하게 경고)대로 동작한 것이지만, "매도 신호가 사실상 단독조건에 의해서만 발동되고 종합점수 기준을 못 채운다"는 기존 관측(위 "신호 임계값이 사실상 사문화된 상태" 참고)을 뒷받침하는 더 뚜렷한 사례라 금요일 리포트 판단 근거에 추가할 값어치 있음 — 코드 수정은 안 함(기존과 동일하게 판단 보류)
 - **쿨다운(4시간) 억제 효과는 이번 1회 실행만으로는 검증 불가** — 같은 날 후속 스캔(스케줄 또는 추가 수동 실행)이 있어야 동일 종목 재알림 억제 여부를 확인할 수 있음. 이 실행 이후 정규 스케줄(`*/10 0-8 * * 1-5`, 09:00~18:00 KST) 트리거가 실제로 발생하는지도 별도 확인 필요(위 "트리거 신뢰성" 참고 — 이 실행 자체가 스케줄이 아니라 수동 실행이었음)
+
+---
+
+## 매수/매도/관심 판단 보강용 외부 정보 추가 (2026-08-28 추가)
+사용자 요청으로 "매수/매도/관심 판단을 보완할 정보"를 검토해 우선순위를 매기고(① 공매도 비중·해외지수환율·공시, ② 업종 상대강도·거래대금 스크리닝), 1·2순위를 개발.
+**전부 정보성 표시 + DB 기록만 하고 아직 신호 점수엔 반영하지 않음** — VKOSPI/코스피200선물과 동일한 원칙(데이터 쌓이면 예측 오차와의 상관관계를 보고 반영 여부 판단).
+
+**⚠️ 개발 환경 제약**: 이 세션의 개발 샌드박스는 일부 도메인(pypi.org 등)만 네트워크가 허용되고 KRX·DART·야후파이낸스 등은 차단돼 있어, 아래 기능들의 실제 외부 API 호출을 라이브로 검증하지 못했음 — pykrx/DART 응답 스키마는 문서·기억에 의존해 작성. **배포 전 반드시 GitHub Actions `workflow_dispatch`로 드라이런 검증할 것.** 대신 이 세션에서 가능한 만큼은 검증함: FDR/pykrx/DART 응답을 흉내 낸 mock으로 `get_global_market()`, `get_short_interest_ratios()`(정상/컬럼누락/pykrx미설치 3가지 케이스), `get_today_disclosure_tickers()`(정상/페이지네이션/키미설정/데이터없음 4가지 케이스), `_calc_sector_rs()`, `_format_slack_message()` 전체 렌더링, `_mark_alerted()`→`save_signal()` 인자 순서까지 유닛 테스트로 확인 완료 — 로직 자체의 버그는 없을 것으로 보이나 **외부 서버의 실제 응답 스키마가 가정과 다를 가능성**은 여전히 남아있음.
+
+### 1순위 ① 해외 지수·환율 (`KISApi.get_global_market()`)
+- FDR 티커 `'US500'`(S&P500), `'USD/KRW'`(원/달러 환율)의 전일 대비 등락률 — FDR을 직접 호출(기존 `get_daily_ohlcv()`는 국내 정수가 전제라 재사용 시 소수점이 깨짐, 그래서 별도 구현)
+- 목적: 국내 장은 미국 증시 마감 이후 열리므로, `stale_data_override`(당일 급락 시 매도) 같은 신호가 "이 종목만의 문제"인지 "간밤 미국장發 전체 시장 동조화"인지 구분하는 참고자료
+- Slack 헤더에 `🌐 S&P500 +0.2% · USD/KRW +0.2% (전일 마감 기준)` 형태로 표시, `stock_signal_log.sp500_change_pct`/`usdkrw_change_pct`에 기록
+- FDR 기반이라 API 키 불필요, 이 중 가장 신뢰도 높음(기존 KS11/KQ11 조회와 동일한 검증된 경로의 변형)
+
+### 1순위 ② 공매도 비중 (`src/api/krx_data.py`, 신규 의존성 `pykrx`)
+- `pykrx.stock.get_shorting_volume_top50(date, market)`로 코스피/코스닥 공매도 거래대금 상위 50종목의 비중을 스캔당 1회 조회(종목별 개별 호출 아님)
+- KRX 공매도 데이터는 통상 D+1 공표라 최근 5일을 거슬러 올라가며 가장 최근 공표된 날짜를 사용, 그 날짜를 항상 같이 표시
+- **상위 50위 밖 종목은 결과에 아예 없음** — "비중 0%"과 "순위 밖이라 모름"을 구분해야 해서, 값이 있는 종목만 Slack에 표시(`🩳 공매도 비중: 3.2% (거래대금 상위50 기준, 20260827)`)
+- 응답 컬럼명이 예상과 다르면(`_RATIO_COLUMN_CANDIDATES`에 없는 이름) WARNING 로그에 실제 컬럼 목록을 남기고 조용히 건너뜀 — pykrx 스키마 드리프트 대응은 이 로그로 확인 후 코드 수정
+- `requirements.txt`에 `pykrx>=1.0.51` 추가
+
+### 1순위 ③ 당일 공시 여부 (`src/api/dart_api.py`, DART Open API)
+- **`DART_API_KEY` 환경변수 필요** — https://opendart.fss.or.kr 무료 가입 후 발급, `.env`와 GitHub Secrets에 등록해야 동작. 미설정 시 `SLACK_TRADE_ALLOWED_USERS`와 동일한 원칙으로 기능 전체를 조용히 건너뜀(로그만 남김, 스캔엔 영향 없음)
+- 목적: 당일 급등락 신호(특히 `stale_data_override`)가 실적발표·공급계약·유상증자 같은 재료성 이벤트에 의한 것인지 전혀 모른 채 판정되던 문제 보완 — 최소한 "오늘 공시가 있었다"는 플래그만이라도 신뢰도 판단 참고자료로 제공
+- `list.json` 엔드포인트로 당일(KST) 전체 상장사 공시 목록을 최대 5페이지(500건)까지 조회해 종목코드 집합만 추출 — 종목별 개별 호출 아님
+- Slack 헤더의 종목명 옆에 `· 📋공시` 배지로 표시, `stock_signal_log.has_disclosure`에 boolean 기록
+- **GitHub Secrets에 `DART_API_KEY` 추가 필요** (`stock_monitor.yml`에 이미 passthrough 배선함, 시크릿 자체는 아직 등록 안 됨 — 등록 전엔 그냥 항상 건너뜀)
+
+### 2순위 ① 업종 ETF 대비 상대강도 (watchlist 일부 종목만)
+- 기존 상대강도(KS11/KQ11)는 시장 전체 대비라 "시장이 오르니까 같이 오른 것"과 "업종 내 특별한 강세"를 구분 못 함 — 업종 대표 ETF를 벤치마크로 추가
+- **KRX 업종지수를 FDR로 직접 조회 가능한지 검증을 못 해**, 이미 검증된 "일반 종목코드 조회"(`get_daily_ohlcv`) 경로를 그대로 타는 유동성 높은 업종 ETF를 벤치마크로 대신 씀
+- `WATCHLIST_SECTOR_ETF` 매핑에 **005930/000660(반도체) → 091160(KODEX 반도체) 딱 하나만** 채워 넣음 — 나머지 워치리스트 종목의 업종 ETF 코드는 이 세션에서 실측(`get_current_price` 정상 조회 확인) 검증을 못 해 자신 있게 채워 넣지 않았음. **확장하려면 이 프로젝트의 기존 원칙대로 반드시 실측 확인 후 추가할 것** — 지금까지 모든 watchlist 확장이 이 방식으로 진행됨(위 watchlist 확장 이력 참고)
+- 매핑 없는 종목은 기존과 동일하게 시장 지수(KS11/KQ11)만 사용, 동작 변화 없음
+- `_calc_sector_rs()`: 종목 5일 수익률 − 업종 ETF 5일 수익률(%p), Slack에 `🏭 업종 ETF 대비 5일 상대강도: +3.6%p`로 표시
+
+### 2순위 ② 거래대금 하한 스크리닝 (`strategy.yaml screening.min_trading_value`)
+- **애초 계획했던 "거래대금순위 전용 TR"은 구현 안 함** — `get_top_volume_stocks()`의 `FID_BLNG_CLS_CODE` 파라미터가 실제로 무엇을 하는지는 위 "스캔 시장 범위" 섹션에서 이미 2026-08-20에 실측 확인된 바 있고("1"/"2"는 종목등급 분류, 시장/정렬 기준 전환이 아님), 그 실측과 상충하는 값(예: "3"=거래대금순)을 검증 없이 가정하는 건 이 프로젝트의 원칙에 안 맞아 채택 안 함
+- 대신 **이미 검증된 거래량 상위 응답에 포함된 `price`/`volume`으로 거래대금(price×volume)을 직접 계산**해 하한 필터로 추가 — 새 API 호출 불필요, 저가·초소형 테마주가 거래량만으로 스크리닝을 통과하는 문제를 보완
+- 기본값 `0`(미적용) — 얼마가 적정한 하한인지 실측 데이터 없이 임의로 정하지 않음. 켜려면 실제 스캔 결과 변화를 보면서 값을 조정할 것(예: 50억원/일 → `5000000000`)
+
+### Supabase 마이그레이션 (수동 SQL 필요)
+```sql
+alter table stock_signal_log add column sp500_change_pct numeric;
+alter table stock_signal_log add column usdkrw_change_pct numeric;
+alter table stock_signal_log add column short_interest_ratio numeric;
+alter table stock_signal_log add column has_disclosure boolean;
+```
+`save_signal()`이 기존 `vkospi`/`futures_basis`/`watch_blocked_by`와 동일한 폴백 패턴을 적용해뒀음 — 마이그레이션 전에도 이 4개 컬럼만 빼고 재시도해 신호 저장(쿨다운의 근간) 자체는 안 깨짐. 다만 이 필드들 값은 마이그레이션 전까진 DB에 안 쌓임.
+
+### 배포 전 체크리스트
+- [ ] Supabase에 위 4개 컬럼 마이그레이션 SQL 실행
+- [ ] `DART_API_KEY` 발급 후 `.env`(로컬)와 GitHub Secrets(Actions)에 등록 — 안 해도 나머지 기능은 정상 동작(공시만 계속 건너뜀)
+- [ ] `workflow_dispatch`로 드라이런 실행 후 로그에서 확인할 것:
+  - `pykrx` 설치·임포트 성공 여부, "공매도 비중 데이터 N종목 확보" 로그 또는 컬럼 누락 WARNING
+  - S&P500/USD-KRW 값이 상식적인 범위인지(가격 5000선대/1300원대 등)
+  - DART 등록 시 "DART 오늘 공시 종목 N개 확인" 로그
+  - 섹터 ETF(091160) 조회 성공 여부, 005930/000660 알림 발생 시 Slack에 "업종 ETF 대비" 줄이 뜨는지
 
 ---
 

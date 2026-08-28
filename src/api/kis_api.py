@@ -338,6 +338,46 @@ class KISApi:
             "days_to_expiry": int(out.get("hts_rmnn_dynu", 0) or 0),
         }
 
+    def get_global_market(self) -> dict:
+        """해외 지수·환율 스냅샷 (2026-08-28 추가)
+
+        S&P500(FDR 티커 'US500')과 원/달러 환율(FDR 티커 'USD/KRW')의 전일 대비 등락률.
+        국내 장은 미국 증시 마감 이후 열리므로, 간밤 미국장 등락이 당일 국내 개별종목
+        급등락이 "시장 전체 동조화"인지 "종목 고유 이슈"인지 구분하는 참고자료로 쓴다 —
+        아직 신호 점수엔 반영하지 않고 정보성 표시 + DB 기록만 함(VKOSPI/코스피200선물과 동일 원칙).
+
+        get_daily_ohlcv()는 국내 주식 종가를 int로 캐스팅하는데(원화는 정수 단위라 문제 없음),
+        환율·해외지수는 소수점이 의미 있어(예: 1342.50원, S&P500 5632.4) 그 경로를 그대로 쓰면
+        정밀도가 깨진다 — 여기서는 FDR을 직접 호출해 float으로 유지한다.
+        """
+        import FinanceDataReader as fdr
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        start = (now_kst - timedelta(days=10)).strftime("%Y%m%d")
+        end = now_kst.strftime("%Y%m%d")
+
+        def _last_change(ticker: str) -> Optional[dict]:
+            try:
+                df = fdr.DataReader(ticker, start, end)
+            except Exception as e:
+                logger.warning(f"해외 지수·환율 조회 실패 [{ticker}]: {e}")
+                return None
+            if df is None or len(df) < 2:
+                return None
+            price = float(df["Close"].iloc[-1])
+            prev_close = float(df["Close"].iloc[-2])
+            if prev_close <= 0:
+                return None
+            return {
+                "price": price,
+                "change_pct": (price - prev_close) / prev_close * 100,
+                "date": df.index[-1].strftime("%Y%m%d"),
+            }
+
+        return {
+            "sp500": _last_change("US500"),
+            "usdkrw": _last_change("USD/KRW"),
+        }
+
     def get_minute_ohlcv(self, ticker: str, interval: int = 1, market: str = "J") -> list[dict]:
         """분봉 데이터 조회"""
         data = self._get(

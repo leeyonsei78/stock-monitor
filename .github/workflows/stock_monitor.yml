@@ -45,4 +45,7 @@ jobs:
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # 당일 공시 조회용 (2026-08-28 추가, 선택) — 미설정 시 공시 조회만 조용히 건너뜀
+          # (opendart.fss.or.kr에서 무료 발급, GitHub Secrets에 DART_API_KEY로 등록 필요)
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
         run: .venv/bin/python run_monitor_once.py

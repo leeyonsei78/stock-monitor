@@ -14,6 +14,8 @@ import holidays as kr_cal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.api.kis_api import KISApi
+from src.api.krx_data import get_short_interest_ratios
+from src.api.dart_api import get_today_disclosure_tickers
 from src.analysis.signal_generator import SignalGenerator, SignalType, TradeSignal
 from src.notification.slack_bot import SlackNotifier
 from src.monitor.virtual_trader import VirtualTrader
@@ -71,6 +73,18 @@ ETF_EXCLUDE_KEYWORDS = (
 # 나머지 워치리스트 종목은 전부 코스피/ETF라 KS11 사용.
 # (get_current_price의 market_name으로 실측 확인된 값 — config.yaml watchlist 주석 참고)
 WATCHLIST_KOSDAQ_TICKERS = frozenset({"041190", "277810"})
+
+# 워치리스트 종목 → 업종 대표 ETF (2026-08-28 추가, 업종 지수 대비 상대강도 정보성 표시용)
+# KRX 업종지수를 FDR로 직접 조회할 수 있는지 검증이 안 돼, 이미 get_daily_ohlcv()로 정상
+# 동작이 검증된 "일반 종목 코드 조회" 경로를 그대로 타도록 유동성 높은 업종 대표 ETF를
+# 벤치마크로 대신 쓴다. ⚠️ 아직 005930/000660(반도체)만 매핑함 — 나머지 종목의 ETF 코드는
+# 이 세션에서 실측(get_current_price로 정상 조회되는지) 검증을 못 해 자신 있게 채워 넣지
+# 않았음. 확장하려면 반드시 실측 확인 후 추가할 것(이 프로젝트의 기존 원칙 — 위 watchlist
+# 확장 이력 전부가 이 방식으로 진행됨). 매핑 없는 종목은 기존과 동일하게 KS11/KQ11만 사용.
+WATCHLIST_SECTOR_ETF = {
+    "005930": "091160",  # 삼성전자 → KODEX 반도체
+    "000660": "091160",  # SK하이닉스 → KODEX 반도체
+}
 
 
 class RealtimeMonitor:
@@ -137,6 +151,16 @@ class RealtimeMonitor:
         self._vkospi: Optional[dict] = None
         # 코스피200 지수선물 근월물 — 베이시스 참고용, _scan_once()에서 스캔당 1회 갱신 (2026-08-24 추가)
         self._futures: Optional[dict] = None
+        # 해외 지수·환율(S&P500/USD-KRW) — 시장 동조화 참고용, 스캔당 1회 갱신 (2026-08-28 추가)
+        self._global_market: Optional[dict] = None
+        # 공매도 거래대금 상위 50 비중 — {ticker: {"ratio":, "date":}}, 스캔당 1회 갱신 (2026-08-28 추가)
+        self._short_interest: dict[str, dict] = {}
+        # 오늘 공시 종목 집합(DART) — DART_API_KEY 없으면 항상 빈 set, 스캔당 1회 갱신 (2026-08-28 추가)
+        self._disclosure_tickers: set[str] = set()
+        # 워치리스트 업종 ETF 대비 상대강도 — {ticker: pct_diff}, 스캔당 갱신 (2026-08-28 추가)
+        self._sector_rs: dict[str, float] = {}
+        # 워치리스트 업종 ETF 벤치마크 일봉 — {etf_ticker: ohlcv}, 스캔당 1회 갱신 (2026-08-28 추가)
+        self._sector_ohlcv: dict[str, Optional[list]] = {}
 
     # ── 시장 시간 판단 ────────────────────────────────────────────
     @staticmethod
@@ -184,12 +208,39 @@ class RealtimeMonitor:
         if self._store:
             vkospi_value = self._vkospi["value"] if self._vkospi else None
             futures_basis = self._futures["basis"] if self._futures else None
+            # 해외 지수·환율/공매도 비중/공시 여부 — 전부 스캔당 1회 갱신되는 self._ 속성에서
+            # 종목별로 조회, 정보성 기록만(2026-08-28 추가)
+            gm = self._global_market or {}
+            sp500 = gm.get("sp500")
+            usdkrw = gm.get("usdkrw")
+            short_info = self._short_interest.get(ticker)
             self._store.save_signal(
                 ticker, signal_type.value, score, price, expected_return_pct, reason,
                 vkospi_value, futures_basis, watch_blocked_by,
+                sp500["change_pct"] if sp500 else None,
+                usdkrw["change_pct"] if usdkrw else None,
+                short_info["ratio"] if short_info else None,
+                ticker in self._disclosure_tickers,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
+
+    # ── 업종 ETF 대비 상대강도 (2026-08-28 추가) ───────────────────
+    @staticmethod
+    def _calc_sector_rs(stock_ohlcv: list, sector_ohlcv: Optional[list]) -> Optional[float]:
+        """종목 5일 수익률 - 업종 ETF 5일 수익률(%p). 데이터 부족/조회 실패 시 None.
+        기존 KS11/KQ11 대비 상대강도(relative_strength_signal)와 같은 방식(초과수익률)이지만
+        시장 전체가 아닌 업종 벤치마크라는 점만 다름 — 아직 이 값 자체는 점수에 반영 안 하고
+        Slack 정보성 표시 + DB 기록만 함(백테스트 없이 검증된 지표가 아니므로).
+        """
+        if not sector_ohlcv or len(stock_ohlcv) < 6 or len(sector_ohlcv) < 6:
+            return None
+        try:
+            stock_ret = (stock_ohlcv[-1]["close"] - stock_ohlcv[-6]["close"]) / stock_ohlcv[-6]["close"] * 100
+            sector_ret = (sector_ohlcv[-1]["close"] - sector_ohlcv[-6]["close"]) / sector_ohlcv[-6]["close"] * 100
+        except (KeyError, ZeroDivisionError):
+            return None
+        return stock_ret - sector_ret
 
     # ── 추천가 / 추천 수량 계산 ──────────────────────────────────
     def _calc_recommendation(self, signal: TradeSignal) -> dict:
@@ -359,8 +410,11 @@ class RealtimeMonitor:
         ah_badge = "  ⏰ _시간외_" if is_after_hours else ""
         market_name = current_info.get("market_name", "")
         market_tag = f" · {market_name}" if market_name else ""
+        # 당일 공시 배지 (2026-08-28 추가) — DART_API_KEY 없거나 조회 실패 시 self._disclosure_tickers가
+        # 항상 빈 set이라 자연스럽게 표시 안 됨
+        disclosure_tag = " · 📋공시" if signal.ticker in self._disclosure_tickers else ""
         header = (
-            f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker}{market_tag})*{ah_badge}\n"
+            f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker}{market_tag}{disclosure_tag})*{ah_badge}\n"
             f"현재가: *{signal.current_price:,}원*  (전일比 {change_sign}{change_pct:.2f}%)"
             f"  |  신호점수: *{signal.score:+.3f}*"
         )
@@ -374,6 +428,16 @@ class RealtimeMonitor:
                 f"\n📐 코스피200 선물({fut['contract']}) {fut['price']:.2f} ({fut['change_pct']:+.1f}%)"
                 f" 베이시스 {fut['basis']:+.2f}({basis_label})"
             )
+        # 해외 지수·환율 (2026-08-28 추가) — 간밤 미국장 동조화 여부 참고용, 아직 점수 미반영
+        gm = self._global_market or {}
+        sp500, usdkrw = gm.get("sp500"), gm.get("usdkrw")
+        if sp500 or usdkrw:
+            parts = []
+            if sp500:
+                parts.append(f"S&P500 {sp500['change_pct']:+.1f}%")
+            if usdkrw:
+                parts.append(f"USD/KRW {usdkrw['change_pct']:+.1f}%")
+            header += f"\n🌐 {' · '.join(parts)} (전일 마감 기준)"
 
         # ── 거래량 ──
         vol        = current_info.get("volume", 0)
@@ -424,6 +488,17 @@ class RealtimeMonitor:
         if trend_str:
             investor_block += f"\n{trend_str}"
         investor_block += "\n_*프로그램: KIS API가 실제 수량을 제공하지 않아 항상 0으로 표시 — 점수 계산에서도 제외(가중치 0%)됨_"
+        # 공매도 비중 (2026-08-28 추가) — 거래대금 상위 50위 밖이면 표시 자체를 생략(위 krx_data.py
+        # 참고: "0%"과 "순위 밖"을 구분 못 하므로 값이 있을 때만 보여줌). 아직 점수 미반영
+        short_info = self._short_interest.get(signal.ticker)
+        if short_info:
+            investor_block += (
+                f"\n🩳 공매도 비중: *{short_info['ratio']:.1f}%* (거래대금 상위50 기준, {short_info['date']})"
+            )
+        # 업종 ETF 대비 상대강도 (2026-08-28 추가) — WATCHLIST_SECTOR_ETF에 매핑된 종목만
+        sector_rs = self._sector_rs.get(signal.ticker)
+        if sector_rs is not None:
+            investor_block += f"\n🏭 업종 ETF 대비 5일 상대강도: *{sector_rs:+.1f}%p*"
 
         # ── 기술적 지표 ──
         rsi     = ind.get("rsi", 0)
@@ -552,6 +627,12 @@ class RealtimeMonitor:
         if len(ohlcv) < 30:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
             return None
+
+        # 업종 ETF 대비 상대강도 — 매핑된 워치리스트 종목만, 정보성 표시용 (2026-08-28 추가)
+        # 아직 신호 점수엔 반영 안 함(WATCHLIST_SECTOR_ETF 매핑이 일부만 채워져 있어 검증 부족)
+        sector_etf = WATCHLIST_SECTOR_ETF.get(ticker)
+        if sector_etf:
+            self._sector_rs[ticker] = self._calc_sector_rs(ohlcv, self._sector_ohlcv.get(sector_etf))
 
         try:
             signal = self._signal.generate(
@@ -736,6 +817,43 @@ class RealtimeMonitor:
             logger.warning(f"코스피200 선물 조회 실패: {e}")
             self._futures = None
 
+        # 해외 지수·환율 — 스캔 1회당 1번만 조회, 간밤 미국장 동조화 여부 참고용 (2026-08-28 추가)
+        try:
+            self._global_market = self._api.get_global_market()
+            sp500, usdkrw = self._global_market.get("sp500"), self._global_market.get("usdkrw")
+            if sp500:
+                logger.info(f"S&P500: {sp500['price']:.1f} ({sp500['change_pct']:+.2f}%, 기준 {sp500['date']})")
+            if usdkrw:
+                logger.info(f"USD/KRW: {usdkrw['price']:.1f} ({usdkrw['change_pct']:+.2f}%)")
+        except Exception as e:
+            logger.warning(f"해외 지수·환율 조회 실패: {e}")
+            self._global_market = None
+
+        # 공매도 거래대금 상위 50 비중 — 스캔 1회당 1번만 조회 (2026-08-28 추가)
+        # KRX 데이터 lag 특성상 pykrx 자체가 여러 날짜를 시도하므로 여기선 그대로 위임
+        try:
+            self._short_interest = get_short_interest_ratios()
+        except Exception as e:
+            logger.warning(f"공매도 비중 조회 실패: {e}")
+            self._short_interest = {}
+
+        # 당일 공시 종목 — 스캔 1회당 1번만 조회, DART_API_KEY 없으면 빈 set (2026-08-28 추가)
+        try:
+            self._disclosure_tickers = get_today_disclosure_tickers()
+        except Exception as e:
+            logger.warning(f"공시 조회 실패: {e}")
+            self._disclosure_tickers = set()
+
+        # 워치리스트 업종 ETF 벤치마크 — 매핑된 ETF 코드만 스캔 1회당 1번씩 조회 (2026-08-28 추가)
+        self._sector_ohlcv = {}
+        for etf in set(WATCHLIST_SECTOR_ETF.values()):
+            try:
+                self._sector_ohlcv[etf] = self._api.get_daily_ohlcv(etf, period=10)
+            except Exception as e:
+                logger.warning(f"섹터 ETF({etf}) 조회 실패 — 해당 종목 업종 상대강도 비활성화: {e}")
+                self._sector_ohlcv[etf] = None
+        self._sector_rs = {}
+
         stocks: list[dict] = []
 
         for ticker in self._watchlist:
@@ -760,6 +878,12 @@ class RealtimeMonitor:
         max_price     = scr.get("max_price", float("inf"))
         min_volume    = scr.get("min_volume", 0)
         min_market_cap = scr.get("min_market_cap", 0)
+        # 거래대금(가격×거래량) 하한 — 저가·초소형 테마주가 거래량만으로 스크리닝을 통과하는
+        # 문제를 보완 (2026-08-28 추가). 기본값 0(미적용)이라 튜닝 전엔 기존 스캔 결과에
+        # 영향 없음 — get_top_volume_stocks가 이미 반환하는 price*volume으로 계산해 별도
+        # API 호출 불필요("거래대금순위" 전용 TR이 실제 존재/동작하는지 확인 못 해 안전하게
+        # 기존 거래량 상위 결과를 재활용하는 방식을 택함, 위 CLAUDE.md 참고)
+        min_trading_value = scr.get("min_trading_value", 0)
         added = 0
         for iscd, index_key, label in (
             (KISApi.ISCD_KOSPI,  "KS11", "코스피"),
@@ -781,6 +905,8 @@ class RealtimeMonitor:
                         if s["volume"] < min_volume:
                             continue
                         if s.get("market_cap", 0) < min_market_cap:
+                            continue
+                        if s["price"] * s["volume"] < min_trading_value:
                             continue
                         stocks.append({"ticker": s["ticker"], "name": s["name"],
                                        "market": "J", "index": index_key})

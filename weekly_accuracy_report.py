@@ -101,6 +101,41 @@ def _group_stats(rows: list[dict]) -> list[str]:
     return parts
 
 
+# 매도 신호 "단독조건"별 세부 적중률 (2026-08-28 추가)
+# 도입 배경: 8/28 주간 리포트에서 매도 적중률 51.2%(거의 랜덤), 매도 발동 시점 평균
+# 종합점수가 오히려 양수로 확인돼 signal_generator._classify_signal()의 RSI 과매수/
+# 외국인 연속매도 "단독조건" 가드를 score<0 → standalone_score_max(-0.15)로 강화했음
+# (config/strategy.yaml sell_conditions 참고). 기존 "오전 연속매수/매도 신호 N건" 줄은
+# 빈도만 셀 뿐 그 신호들의 적중률은 안 보여줘서, 이 강화가 실제로 도움됐는지 판단할
+# 근거가 없었음 — 이 함수가 그 공백을 메움. 카테고리는 배타적이지 않음(reason이
+# " / "로 여러 사유를 동시에 담을 수 있어 한 신호가 여러 카테고리에 겹쳐 들어갈 수 있음).
+_SELL_REASON_CATEGORIES = (
+    ("종합점수기반", "종합 점수 낮음"),
+    ("RSI과매수단독", "RSI 과매수"),
+    ("외국인연속매도단독", "연속 매도"),
+    ("당일급락오버라이드", "당일 급락"),
+)
+SELL_REASON_MIN_ROWS = 5  # 카테고리별 최소 표본 — 이보다 적으면 생략(노이즈 방지, 위 MIN_ROWS_FOR_REPORT와 동일 원칙)
+
+
+def _sell_reason_breakdown(rows: list[dict]) -> list[str]:
+    """매도 신호를 발동 사유별로 나눠 적중률·평균수익률·평균종합점수를 계산.
+    표본이 SELL_REASON_MIN_ROWS 미만인 카테고리는 노이즈 방지를 위해 생략."""
+    sell_rows = [r for r in rows if r["signal_type"] in SELL_TYPES and r.get("reason")]
+    lines = []
+    for label, keyword in _SELL_REASON_CATEGORIES:
+        group = [r for r in sell_rows if keyword in r["reason"]]
+        if len(group) < SELL_REASON_MIN_ROWS:
+            continue
+        hits = sum(1 for r in group if r["return_1d_pct"] < 0)
+        avg = sum(r["return_1d_pct"] for r in group) / len(group)
+        avg_score = sum(r["score"] for r in group) / len(group)
+        lines.append(
+            f"  {label}: {hits}/{len(group)}적중(평균 {avg:+.1f}%, 평균종합점수 {avg_score:+.3f})"
+        )
+    return lines
+
+
 def _vt_stat_line(rows: list[dict]) -> str:
     """가상매매 청산 결과 요약 한 줄 (주간/누적 공용) — target_hit/stop_hit/reversal_sell/timeout
     비율이 그대로 ATR 배수(atr_stop_multiplier/atr_target_multiplier) 튜닝 근거가 됨:
@@ -196,6 +231,12 @@ def main():
         lines.append("")
         total_parts = _group_stats(rows)
         lines.append(f"*누적 전체* ({len(rows)}건) — {' | '.join(total_parts) if total_parts else '데이터 없음'}")
+
+        breakdown = _sell_reason_breakdown(rows)
+        if breakdown:
+            lines.append("")
+            lines.append("📉 *매도 사유별 세부 적중률* (누적 전체, 카테고리 중복 가능)")
+            lines.extend(breakdown)
 
     lines.append("")
     lines.append(_virtual_trading_section(vt_rows))

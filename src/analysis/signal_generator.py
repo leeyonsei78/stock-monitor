@@ -290,11 +290,15 @@ class SignalGenerator:
         # 매도 조건 (OR)
         if score <= sell_cfg["min_signal_score"]:
             reasons.append(f"종합 점수 낮음({score:.3f})")
-        # RSI 단독 매도는 종합 점수가 음수일 때만 — 수급 양호 급등주에서 오발화 방지
-        if ind.get("rsi", 50) >= sell_cfg["rsi_min"] and score < 0:
+        # RSI 과매수/외국인 연속매도 "단독조건" 매도의 종합점수 가드 (2026-08-28 강화)
+        # 기존 "score < 0"은 -0.021 같은 사실상 0에 가까운 값도 통과시켜 실질 필터 역할을
+        # 못 했음 — 8/28 주간 리포트 실측(매도 적중률 51.2%, 매도 시점 평균 종합점수가
+        # 오히려 양수)으로 확인돼 standalone_score_max(기본 -0.15)로 강화. 확실한 하락
+        # 경고(stale_data_override)는 설계상 종합점수 무시가 의도된 것이라 이 가드와 무관하게 유지
+        standalone_score_max = sell_cfg.get("standalone_score_max", 0.0)
+        if ind.get("rsi", 50) >= sell_cfg["rsi_min"] and score < standalone_score_max:
             reasons.append(f"RSI 과매수({ind['rsi']:.1f})")
-        # 외국인 연속매도 단독 매도도 RSI와 동일하게 종합 점수가 음수일 때만 — 수급 양호 급등주 오발화 방지
-        if inv_hist.get("foreign_streak", 0) <= -3 and score < 0:
+        if inv_hist.get("foreign_streak", 0) <= -3 and score < standalone_score_max:
             reasons.append(f"외국인 {abs(inv_hist['foreign_streak'])}일 연속 매도")
         if stale_sell_override:
             reasons.append(

@@ -43,6 +43,19 @@ def get_short_interest_ratios(lookback_days: int = 5) -> dict[str, dict]:
         logger.warning("pykrx 미설치 — 공매도 비중 조회 건너뜀 (requirements.txt 확인)")
         return {}
 
+    # 임시 진단 로그 (2026-08-28) — 최근 5일이 전부 빈 응답으로 나오는 원인이 "이 환경의 실제
+    # 서버 달력이 이 프로젝트가 쓰는 미래 날짜를 아직 모르는 것"인지, 다른 파라미터 문제인지
+    # 구분하기 위해 확실히 과거인 실제 거래일(2024-01-02, 코스피 첫 거래일)로 한 번 찔러봄.
+    # 원인 확인되면 이 블록은 제거할 것.
+    try:
+        diag_df = krx_stock.get_shorting_volume_top50("20240102", "KOSPI")
+        logger.info(
+            f"[진단] 확실한 과거일(20240102) 조회 결과: "
+            f"{'빈 응답' if diag_df is None or diag_df.empty else f'{len(diag_df)}행, 컬럼={list(diag_df.columns)}'}"
+        )
+    except Exception as e:
+        logger.info(f"[진단] 확실한 과거일(20240102) 조회 중 예외: {type(e).__name__}: {e}")
+
     now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
     for delta in range(lookback_days):
         strdate = (now_kst - timedelta(days=delta)).strftime("%Y%m%d")

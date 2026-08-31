@@ -825,23 +825,29 @@ class RealtimeMonitor:
         for key, idx, index_code in (("KS11", "KS11", "0001"), ("KQ11", "KQ11", "1001")):
             try:
                 ohlcv = self._api.get_daily_ohlcv(idx, period=30)
+            except Exception as e:
+                logger.warning(f"{idx} 지수 데이터 조회 실패 — 해당 시장 상대강도 비활성화: {e}")
+                self._index_ohlcv[key] = None
+                continue
+            # 오늘 실시간가 주입은 get_daily_ohlcv 성공과 별개 try로 분리 (2026-08-31 코드
+            # 리뷰로 발견) — 같은 try 안에 있으면 get_index_current()만 실패해도(장전/장후
+            # 시간외 등) 이미 성공한 30일치 ohlcv까지 통째로 버려져 상대강도가 불필요하게
+            # 꺼짐. 여기서 실패하면 주입만 건너뛰고 기존 ohlcv(전일 종가 기준)는 그대로 사용
+            try:
                 idx_current = self._api.get_index_current(index_code)
                 prev_close = ohlcv[-1]["close"] if ohlcv else 0
-                day_change_ok = (
-                    prev_close > 0 and idx_current["price"] > 0
-                    and abs(idx_current["price"] / prev_close - 1) <= 0.15
-                )
-                if day_change_ok:
+                if prev_close <= 0:
+                    logger.warning(f"{idx} 전일 종가 데이터 없음 — 오늘 실시간가 주입 스킵")
+                elif idx_current["price"] > 0 and abs(idx_current["price"] / prev_close - 1) <= 0.15:
                     ohlcv = self._inject_today_row(ohlcv, {"price": idx_current["price"], "volume": 1})
                 elif idx_current["price"] > 0:
                     logger.warning(
                         f"{idx}({index_code}) 지수현재가 {idx_current['price']}가 전일종가({prev_close}) "
                         f"대비 비정상적 등락 — 코드 매핑 오류 의심, 오늘 실시간가 주입 스킵(전일 종가로 대체)"
                     )
-                self._index_ohlcv[key] = ohlcv
             except Exception as e:
-                logger.warning(f"{idx} 지수 데이터 조회 실패 — 해당 시장 상대강도 비활성화: {e}")
-                self._index_ohlcv[key] = None
+                logger.warning(f"{idx} 지수현재가 조회 실패 — 오늘 실시간가 주입만 건너뜀(전일 종가로 대체): {e}")
+            self._index_ohlcv[key] = ohlcv
 
         # VKOSPI(변동성지수) — 스캔 1회당 1번만 조회, 시장 레짐 참고용 (2026-08-24 추가)
         try:

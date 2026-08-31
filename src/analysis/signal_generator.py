@@ -205,26 +205,48 @@ class SignalGenerator:
         (당일 투자자 데이터 미집계 + 극단적 등락 시 안전장치)로 종합점수가 양수인데도 SELL이 뜨는
         경우가 생겨서(8/24 삼성전자 실측: score=+0.288인데 매도) — score 부호로 방향을 정하면 매도
         신호에 "+6.1%" 같은 상승 예상치가 붙는 모순이 발생했음
+
+        신뢰도(confidence)는 |score|로 산출하되, score 부호가 위 방향과 어긋날 때는 쓰지 않음
+        (2026-08-28 수정, 8/28 주간 리포트 실측: 예상등락률 방향적중 92/206=44.7%로 랜덤보다 낮음,
+        가상매매 완결거래 기준 1/8=12.5% 확인 후 재검토): 방향이 stale_data_override로 강제된 경우
+        score는 오히려 반대 방향(위 8/24 예시면 +0.288=강세)을 가리키므로, 그 크기를 그대로 confidence로
+        쓰면 "반대 방향에 대한 확신이 클수록 이 방향의 확신도 크다"는 모순이 생김 — 8/24 사례라면
+        SELL인데 confidence 38%(0.288/0.75)가 나와 -2.6%p 근처 예상치가 나갔던 것으로, 방향 오류(2026-08-24
+        수정으로 해결)와 별개로 크기(confidence) 자체도 근거 없이 부풀려져 있었던 것. score 부호가 방향과
+        일치할 때만 |score|를 confidence로 쓰고, 어긋나면 최소 배율(multiplier_min)만 적용 — 데이터 근거
+        없이 "그래도 어느 정도는 계속 갈 것"이라고 확신도를 지어내지 않기 위한 보수적 기본값.
         실제 신호-결과 데이터(evaluate_signals.py)가 쌓이면 회귀모델 기반으로 교체 예정 (2026-08-21 추가)"""
         cfg = self._cfg["prediction"]
         if not atr_pct or atr_pct <= 0:
             atr_pct = 2.0  # 데이터 부족 시 보수적 기본값
 
-        confidence = min(1.0, abs(score) / cfg["confidence_score_ref"])
-        multiplier = cfg["multiplier_min"] + (cfg["multiplier_max"] - cfg["multiplier_min"]) * confidence
         if signal_type in (SignalType.BUY, SignalType.STRONG_BUY, SignalType.WATCH):
             direction = 1
         elif signal_type in (SignalType.SELL, SignalType.STRONG_SELL):
             direction = -1
         else:
             direction = 1 if score >= 0 else -1
+
+        score_agrees = (direction > 0 and score >= 0) or (direction < 0 and score <= 0)
+        if score_agrees:
+            confidence = min(1.0, abs(score) / cfg["confidence_score_ref"])
+        else:
+            confidence = 0.0  # score가 반대 방향 — 근거 없는 확신도를 만들지 않고 최소 배율로 보수적 추정
+        multiplier = cfg["multiplier_min"] + (cfg["multiplier_max"] - cfg["multiplier_min"]) * confidence
         expected_pct = direction * atr_pct * multiplier
 
-        basis = (
-            f"최근 14일 변동성(ATR) {atr_pct:.1f}%에 신호강도(점수 {score:+.2f}, "
-            f"신뢰도 {confidence*100:.0f}%)를 반영한 경험적 추정치 — 1~3일 후 실제 등락률과 비교해 "
-            f"정확도 검증 중, 확률이나 특정 시점 예측이 아닌 대략적 크기 참고치"
-        )
+        if score_agrees:
+            basis = (
+                f"최근 14일 변동성(ATR) {atr_pct:.1f}%에 신호강도(점수 {score:+.2f}, "
+                f"신뢰도 {confidence*100:.0f}%)를 반영한 경험적 추정치 — 1~3일 후 실제 등락률과 비교해 "
+                f"정확도 검증 중, 확률이나 특정 시점 예측이 아닌 대략적 크기 참고치"
+            )
+        else:
+            basis = (
+                f"최근 14일 변동성(ATR) {atr_pct:.1f}%, 방향이 종합점수(={score:+.2f})와 무관하게 "
+                f"결정된 신호(예: 당일 급락/급등 오버라이드)라 신뢰도 산출 보류 — 최소 배율만 반영한 "
+                f"보수적 추정치, 1~3일 후 실제 등락률과 비교해 정확도 검증 중"
+            )
         return round(expected_pct, 2), basis
 
     def _classify_signal(

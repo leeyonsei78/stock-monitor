@@ -697,7 +697,11 @@ class RealtimeMonitor:
             self._store.save_price_snapshot(ticker, signal.current_price)
 
         if not self._should_alert(ticker, signal.signal_type):
-            logger.debug(
+            # 2026-08-31 debug→info로 상향 (config.yaml logging.level 기본값이 INFO라 debug는
+            # 항상 가려져 있었음) — krx_data.py에서 2026-08-28에 고친 것과 동일한 유형의 문제:
+            # 콘솔 로그만으로 "이 종목이 왜 알림이 안 나갔는지"(쿨다운 vs 다른 사유) 진단이 안 됐음.
+            # 쿨다운 자체는 정상/빈번한 상태라 warning이 아닌 info로 상향(경고성 로그 남발 방지)
+            logger.info(
                 f"[{ticker}] 쿨다운 중 - {signal.signal_type.value} 알림 건너뜀"
             )
             return signal

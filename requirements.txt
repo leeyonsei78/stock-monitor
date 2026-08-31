@@ -39,6 +39,7 @@ finance-datareader>=0.9.50
 # 한국 공휴일·대체공휴일 판단
 holidays>=0.46
 
-# KRX 공매도 비중 조회 (2026-08-28 추가, API 키 불필요) — src/api/krx_data.py
-# 이 프로젝트 개발 환경에서 실제 호출 검증을 못 함 — 배포 전 workflow_dispatch 드라이런 필수
+# KRX 공매도 비중 조회 (2026-08-28 추가) — src/api/krx_data.py
+# ⚠️ KRX 회원 로그인(KRX_ID/KRX_PW 환경변수) 필요 — 최초엔 "API 키 불필요"로 잘못 적었다가
+# 실측(드라이런)으로 정정, 미설정 시 이 기능만 조용히 비활성화(스캔엔 영향 없음). 상세는 krx_data.py 참고
 pykrx>=1.0.51

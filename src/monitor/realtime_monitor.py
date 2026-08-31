@@ -225,6 +225,28 @@ class RealtimeMonitor:
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
 
+    @staticmethod
+    def _inject_today_row(ohlcv: list, current_info: dict) -> list:
+        """오늘 실시간 시세를 OHLCV 마지막 행으로 주입 (FDR의 당일 데이터 지연 보완).
+        이미 오늘 날짜 행이 있거나 거래량 정보가 없으면 원본 그대로 반환.
+        _analyze_stock의 개별 종목뿐 아니라 업종 ETF 벤치마크(_calc_sector_rs)에도 동일하게
+        적용해야 함 — 종목 쪽만 오늘 실시간가를 쓰고 ETF 쪽은 전일 종가에 머물러 있으면
+        장중 상대강도 비교가 오염됨 (2026-08-28 sector RS 추가 시 최초엔 이 처리가
+        ETF 쪽에 빠져 있었던 걸 코드 리뷰로 발견, 공통 헬퍼로 추출해 수정)."""
+        if not ohlcv:
+            return ohlcv
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        if ohlcv[-1]["date"] >= today_str or current_info.get("volume", 0) <= 0:
+            return ohlcv
+        return ohlcv + [{
+            "date":   today_str,
+            "open":   current_info.get("open",  ohlcv[-1]["close"]),
+            "high":   current_info.get("high",  ohlcv[-1]["close"]),
+            "low":    current_info.get("low",   ohlcv[-1]["close"]),
+            "close":  current_info.get("price", ohlcv[-1]["close"]),
+            "volume": current_info["volume"],
+        }]
+
     # ── 업종 ETF 대비 상대강도 (2026-08-28 추가) ───────────────────
     @staticmethod
     def _calc_sector_rs(stock_ohlcv: list, sector_ohlcv: Optional[list]) -> Optional[float]:
@@ -613,16 +635,7 @@ class RealtimeMonitor:
         # 오늘 실시간 거래량을 OHLCV에 반영
         # FDR은 당일 데이터를 volume=0으로 포함 후 필터링하므로 오늘 행이 없는 경우가 많음.
         # 거래량 상위 종목은 오늘 거래량이 높은 종목인데 FDR 어제 데이터로 vol_ratio 계산하면 조건 미달.
-        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
-        if ohlcv and ohlcv[-1]["date"] < today_str and current_info.get("volume", 0) > 0:
-            ohlcv = ohlcv + [{
-                "date":   today_str,
-                "open":   current_info.get("open",  ohlcv[-1]["close"]),
-                "high":   current_info.get("high",  ohlcv[-1]["close"]),
-                "low":    current_info.get("low",   ohlcv[-1]["close"]),
-                "close":  current_info.get("price", ohlcv[-1]["close"]),
-                "volume": current_info["volume"],
-            }]
+        ohlcv = self._inject_today_row(ohlcv, current_info)
 
         if len(ohlcv) < 30:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
@@ -845,10 +858,16 @@ class RealtimeMonitor:
             self._disclosure_tickers = set()
 
         # 워치리스트 업종 ETF 벤치마크 — 매핑된 ETF 코드만 스캔 1회당 1번씩 조회 (2026-08-28 추가)
+        # 종목 쪽(_analyze_stock)이 오늘 실시간가를 주입받는 것과 동일하게 ETF도 주입해야
+        # _calc_sector_rs의 5일 수익률 비교가 장중 내내 대칭적으로 성립함 (2026-08-28 코드
+        # 리뷰로 최초 누락 발견 — 없으면 장중엔 종목만 오늘 시세, ETF는 전일 종가로 비교돼
+        # ETF 자체의 당일 변동분이 상대강도에 그대로 새어 들어감)
         self._sector_ohlcv = {}
         for etf in set(WATCHLIST_SECTOR_ETF.values()):
             try:
-                self._sector_ohlcv[etf] = self._api.get_daily_ohlcv(etf, period=10)
+                etf_ohlcv = self._api.get_daily_ohlcv(etf, period=10)
+                etf_info = self._api.get_current_price(etf, market="J")
+                self._sector_ohlcv[etf] = self._inject_today_row(etf_ohlcv, etf_info)
             except Exception as e:
                 logger.warning(f"섹터 ETF({etf}) 조회 실패 — 해당 종목 업종 상대강도 비활성화: {e}")
                 self._sector_ohlcv[etf] = None

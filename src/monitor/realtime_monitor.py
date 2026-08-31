@@ -803,10 +803,22 @@ class RealtimeMonitor:
         # 종목의 소속 시장에 맞는 벤치마크를 쓴다 (2026-08-26): 예전엔 거래량 상위 결과에서
         # 시장 구분이 불가능해 코스닥 종목까지 전부 KS11로 비교하는 근사치를 썼는데,
         # FID_INPUT_ISCD로 코스피/코스닥을 나눠 조회하게 되면서 정확한 벤치마크 사용이 가능해짐.
+        # 장중 실시간 지수값 주입 (2026-08-28, 코드 리뷰로 발견) — 종목 쪽(_analyze_stock)은
+        # 오늘 실시간가를 마지막 행으로 주입하는데 지수 쪽엔 이 처리가 없어서, 장중엔 종목의
+        # 5일 수익률(오늘 실시간가 기준)과 지수의 5일 수익률(전일 종가 기준)이 서로 다른 기준일로
+        # 비교되는 비대칭이 있었음 — 업종 ETF 상대강도(_calc_sector_rs)에서 먼저 발견해 고친 것과
+        # 동일한 버그이지만, 이쪽은 relative_strength가 종합점수에 15% 가중치로 직접 반영되므로
+        # (섹터RS는 0%, 정보성 전용) 실질 영향이 더 큼. get_index_current()로 KIS 지수현재가를
+        # 받아 종목과 동일하게 오늘 행을 주입 — 지수는 거래량 개념이 없어 _inject_today_row의
+        # volume 게이트를 통과시키기 위한 더미값(1)만 채움(관계식은 close만 사용하므로 무해).
         self._index_ohlcv = {}
-        for key, idx in (("KS11", "KS11"), ("KQ11", "KQ11")):
+        for key, idx, index_code in (("KS11", "KS11", "0001"), ("KQ11", "KQ11", "1001")):
             try:
-                self._index_ohlcv[key] = self._api.get_daily_ohlcv(idx, period=30)
+                ohlcv = self._api.get_daily_ohlcv(idx, period=30)
+                idx_current = self._api.get_index_current(index_code)
+                if idx_current["price"] > 0:
+                    ohlcv = self._inject_today_row(ohlcv, {"price": idx_current["price"], "volume": 1})
+                self._index_ohlcv[key] = ohlcv
             except Exception as e:
                 logger.warning(f"{idx} 지수 데이터 조회 실패 — 해당 시장 상대강도 비활성화: {e}")
                 self._index_ohlcv[key] = None

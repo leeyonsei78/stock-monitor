@@ -281,6 +281,28 @@ class KISApi:
             "change_pct": float(out.get("bstp_nmix_prdy_ctrt", 0) or 0),
         }
 
+    def get_index_current(self, code: str) -> dict:
+        """국내 지수(코스피="0001"/코스닥="1001"/코스피200="2001" 등) 현재가 조회 (2026-08-28 추가)
+        get_vkospi()와 동일 TR(FHPUP02100000)·필드(bstp_nmix_prpr/bstp_nmix_prdy_ctrt)를
+        코드만 바꿔 재사용 — 이 필드들은 VKOSPI(코드 0503)에서 이미 실측 검증됨. 코드 체계
+        (0001/1001/2001)도 위 get_vkospi 참고와 동일하게 idxcode.mst로 확인된 값.
+        ⚠️ "0001"/"1001" 코드 자체로 이 TR을 호출한 것은 이 기능(코스피/코스닥 상대강도 실시간
+        보정, realtime_monitor._scan_once 참고) 추가 시점 기준 아직 라이브 드라이런 검증 전임
+        (VKOSPI는 "0503"만 검증됨) — 배포 전 workflow_dispatch로 값이 정상 범위(코스피 지수
+        2000~4000대, 코스닥 500~1000대)인지 확인할 것.
+        """
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+            "FHPUP02100000",
+            {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+            base=self._quote_url,
+        )
+        out = data.get("output", {})
+        return {
+            "price": float(out.get("bstp_nmix_prpr", 0) or 0),
+            "change_pct": float(out.get("bstp_nmix_prdy_ctrt", 0) or 0),
+        }
+
     def _get_kospi200_futures_front_code(self) -> str:
         """코스피200 지수선물 근월물 단축코드를 KIS 마스터 코드파일(fo_idx_code_mts.mst)에서
         동적으로 찾음 — 분기(3/6/9/12월)마다 만기가 바뀌어 코드가 고정이 아님 (2026-08-24 추가).

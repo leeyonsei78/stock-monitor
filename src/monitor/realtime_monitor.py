@@ -812,22 +812,31 @@ class RealtimeMonitor:
         # 받아 종목과 동일하게 오늘 행을 주입 — 지수는 거래량 개념이 없어 _inject_today_row의
         # volume 게이트를 통과시키기 위한 더미값(1)만 채움(관계식은 close만 사용하므로 무해).
         # "0001"/"1001" 코드가 실제로 코스피/코스닥을 가리키는지는 아직 라이브 미검증(위 참고)이라,
-        # 반환값이 상식적인 지수 범위를 벗어나면(코드 매핑이 틀렸거나 다른 지수를 가리키는 경우)
-        # 조용히 잘못된 값을 주입하지 않도록 대략적인 범위로 방어 — 범위를 벗어나면 주입만
-        # 건너뛰고(전일 종가 유지, 기존 동작과 동일) 경고 로그로 코드 재확인을 유도
-        _INDEX_PRICE_SANITY = {"0001": (1000, 6000), "1001": (300, 1500)}  # 코스피/코스닥 대략적 정상 범위
+        # 코드 매핑이 틀렸을 경우를 대비한 방어가 필요함 — 단, 절대 지수 레벨로 정상범위를
+        # 고정하는 방식은 2026-08-31 첫 드라이런에서 바로 오탐으로 이어짐: KS11이 실제로는
+        # 정상 매핑인데도(코스피200 선물 1053.35와 스케일이 맞음, 위 CLAUDE.md 2026-08-24
+        # 실측치 1051.65와도 일치) 반환값 6699.83이 그 시점 가정한 절대범위(1000~6000, 오래된
+        # 레벨 기준)를 벗어나 "코드 매핑 오류 의심"으로 잘못 스킵됨 — 지수는 시간이 지나며
+        # 레벨 자체가 계속 바뀌므로 절대범위는 근본적으로 계속 갱신해야 하는 방식이라 부적합.
+        # 대신 같은 루프에서 이미 받아온 전일 종가(ohlcv[-1]) 대비 등락폭이 상식적인 범위(±15%,
+        # 극단적인 폭등일도 이 안에 듦) 안인지로 판단 — 지수 레벨 자체가 얼마든 상관없이 항상
+        # 유효한 자기 일관성 체크
         self._index_ohlcv = {}
         for key, idx, index_code in (("KS11", "KS11", "0001"), ("KQ11", "KQ11", "1001")):
             try:
                 ohlcv = self._api.get_daily_ohlcv(idx, period=30)
                 idx_current = self._api.get_index_current(index_code)
-                lo, hi = _INDEX_PRICE_SANITY[index_code]
-                if idx_current["price"] > 0 and lo <= idx_current["price"] <= hi:
+                prev_close = ohlcv[-1]["close"] if ohlcv else 0
+                day_change_ok = (
+                    prev_close > 0 and idx_current["price"] > 0
+                    and abs(idx_current["price"] / prev_close - 1) <= 0.15
+                )
+                if day_change_ok:
                     ohlcv = self._inject_today_row(ohlcv, {"price": idx_current["price"], "volume": 1})
                 elif idx_current["price"] > 0:
                     logger.warning(
-                        f"{idx}({index_code}) 지수현재가 {idx_current['price']}가 정상범위({lo}~{hi}) "
-                        f"벗어남 — 코드 매핑 오류 의심, 오늘 실시간가 주입 스킵(전일 종가로 대체)"
+                        f"{idx}({index_code}) 지수현재가 {idx_current['price']}가 전일종가({prev_close}) "
+                        f"대비 비정상적 등락 — 코드 매핑 오류 의심, 오늘 실시간가 주입 스킵(전일 종가로 대체)"
                     )
                 self._index_ohlcv[key] = ohlcv
             except Exception as e:

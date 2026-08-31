@@ -904,11 +904,19 @@ class RealtimeMonitor:
         for etf in set(WATCHLIST_SECTOR_ETF.values()):
             try:
                 etf_ohlcv = self._api.get_daily_ohlcv(etf, period=10)
-                etf_info = self._api.get_current_price(etf, market="J")
-                self._sector_ohlcv[etf] = self._inject_today_row(etf_ohlcv, etf_info)
             except Exception as e:
                 logger.warning(f"섹터 ETF({etf}) 조회 실패 — 해당 종목 업종 상대강도 비활성화: {e}")
                 self._sector_ohlcv[etf] = None
+                continue
+            # get_daily_ohlcv 성공과 별개 try로 분리 (2026-08-31, KS11/KQ11 쪽과 동일한 문제를
+            # 코드 리뷰로 발견해 동일하게 수정) — get_current_price만 실패해도 이미 성공한
+            # 10일치 ohlcv까지 버려지던 문제. 실패하면 오늘 실시간가 주입만 건너뜀
+            try:
+                etf_info = self._api.get_current_price(etf, market="J")
+                etf_ohlcv = self._inject_today_row(etf_ohlcv, etf_info)
+            except Exception as e:
+                logger.warning(f"섹터 ETF({etf}) 실시간가 조회 실패 — 오늘 값 주입만 건너뜀(전일 종가로 대체): {e}")
+            self._sector_ohlcv[etf] = etf_ohlcv
         self._sector_rs = {}
 
         stocks: list[dict] = []

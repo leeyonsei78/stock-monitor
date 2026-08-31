@@ -811,13 +811,24 @@ class RealtimeMonitor:
         # (섹터RS는 0%, 정보성 전용) 실질 영향이 더 큼. get_index_current()로 KIS 지수현재가를
         # 받아 종목과 동일하게 오늘 행을 주입 — 지수는 거래량 개념이 없어 _inject_today_row의
         # volume 게이트를 통과시키기 위한 더미값(1)만 채움(관계식은 close만 사용하므로 무해).
+        # "0001"/"1001" 코드가 실제로 코스피/코스닥을 가리키는지는 아직 라이브 미검증(위 참고)이라,
+        # 반환값이 상식적인 지수 범위를 벗어나면(코드 매핑이 틀렸거나 다른 지수를 가리키는 경우)
+        # 조용히 잘못된 값을 주입하지 않도록 대략적인 범위로 방어 — 범위를 벗어나면 주입만
+        # 건너뛰고(전일 종가 유지, 기존 동작과 동일) 경고 로그로 코드 재확인을 유도
+        _INDEX_PRICE_SANITY = {"0001": (1000, 6000), "1001": (300, 1500)}  # 코스피/코스닥 대략적 정상 범위
         self._index_ohlcv = {}
         for key, idx, index_code in (("KS11", "KS11", "0001"), ("KQ11", "KQ11", "1001")):
             try:
                 ohlcv = self._api.get_daily_ohlcv(idx, period=30)
                 idx_current = self._api.get_index_current(index_code)
-                if idx_current["price"] > 0:
+                lo, hi = _INDEX_PRICE_SANITY[index_code]
+                if idx_current["price"] > 0 and lo <= idx_current["price"] <= hi:
                     ohlcv = self._inject_today_row(ohlcv, {"price": idx_current["price"], "volume": 1})
+                elif idx_current["price"] > 0:
+                    logger.warning(
+                        f"{idx}({index_code}) 지수현재가 {idx_current['price']}가 정상범위({lo}~{hi}) "
+                        f"벗어남 — 코드 매핑 오류 의심, 오늘 실시간가 주입 스킵(전일 종가로 대체)"
+                    )
                 self._index_ohlcv[key] = ohlcv
             except Exception as e:
                 logger.warning(f"{idx} 지수 데이터 조회 실패 — 해당 시장 상대강도 비활성화: {e}")

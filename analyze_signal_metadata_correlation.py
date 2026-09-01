@@ -31,7 +31,7 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.monitor.supabase_store import SupabaseSignalStore
-from src.monitor.realtime_monitor import vkospi_regime_label
+from src.utils.market_regime import vkospi_regime_label
 from src.analysis.signal_generator import SignalType
 from src.utils.logger import setup_logger
 from slack_sdk import WebClient

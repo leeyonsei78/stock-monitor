@@ -43,18 +43,31 @@ _OK_STATUS = "000"
 # report_nm(공시 제목) 키워드 기반 1차 분류 — 위 docstring 참고, 검증 안 된 휴리스틱.
 # 방향이 모호하거나 맥락에 크게 좌우되는 유형(합병, 실적공시, 정기보고서 등)은 의도적으로 제외 —
 # 차라리 "중립"(분류 불가)으로 남기는 게 잘못된 방향을 단정하는 것보다 안전하다고 판단.
-_BULLISH_KEYWORDS = ("무상증자결정", "자기주식취득결정", "단일판매", "공급계약체결", "특허권취득")
+# "단일판매"는 제거(2026-09-01 코드 리뷰로 발견) — "단일판매·공급계약해지"(악재)에도 이
+# substring이 들어있어 "공급계약체결"만으로는 못 잡는 케이스까지 전부 호재로 오분류했음.
+# "공급계약체결"만 남기면 정확히 체결 건만 잡힘(해지 건은 이 문자열을 포함하지 않음).
+_BULLISH_KEYWORDS = ("무상증자결정", "자기주식취득결정", "공급계약체결", "특허권취득")
 _BEARISH_KEYWORDS = (
     "유상증자결정", "자기주식처분결정", "전환사채권발행결정", "신주인수권부사채권발행결정",
     "감자결정", "상장폐지", "관리종목", "소송등의제기",
 )
+# 일부 악재 키워드는 "해소/해제" 등 반대 의미 접미어가 붙으면 오히려 호재로 뒤집힘 —
+# 예: "상장폐지사유해소"(상장폐지 우려 해소, 호재), "관리종목지정해제"(호재) — 이런 반전
+# 패턴이 실제로 존재하는 키워드만 부정어 동반 시 매치에서 제외 (2026-09-01 코드 리뷰로 발견)
+_BEARISH_NEGATION_GUARD: dict[str, tuple[str, ...]] = {
+    "상장폐지": ("해소",),
+    "관리종목": ("해제",),
+}
 
 
 def _classify_sentiment(titles: list[str]) -> str:
     """당일 한 종목의 공시 제목 목록을 종합해 호재/악재/혼합/중립 중 하나로 분류."""
     text = " ".join(titles)
     bullish = any(kw in text for kw in _BULLISH_KEYWORDS)
-    bearish = any(kw in text for kw in _BEARISH_KEYWORDS)
+    bearish = any(
+        kw in text and not any(guard in text for guard in _BEARISH_NEGATION_GUARD.get(kw, ()))
+        for kw in _BEARISH_KEYWORDS
+    )
     if bullish and bearish:
         return "혼합"
     if bullish:

@@ -20,6 +20,7 @@ from src.analysis.signal_generator import SignalGenerator, SignalType, TradeSign
 from src.notification.slack_bot import SlackNotifier
 from src.monitor.virtual_trader import VirtualTrader
 from src.utils.logger import setup_logger
+from src.utils.market_regime import vkospi_regime_label, vkospi_regime_emoji
 
 logger = setup_logger("monitor")
 
@@ -39,27 +40,9 @@ SIGNAL_EMOJI = {
 
 INVESTOR_ARROW = lambda v: "↑" if v > 0 else ("↓" if v < 0 else "→")
 
-# VKOSPI 레짐 구간 (2026-08-24 추가) — 아직 신호 점수엔 반영 안 함, 정보성 표시 + DB 기록만
-# (데이터 쌓이면 실제 예측 오차와의 상관관계 보고 반영 여부 판단 예정). 구간 경계는 통계적으로
-# 검증된 값이 아니라 일반적인 VKOSPI 해석 관례를 참고한 잠정치
-def vkospi_regime_label(value: float) -> str:
-    if value < 20:
-        return "안정"
-    elif value < 35:
-        return "보통"
-    elif value < 50:
-        return "변동성 확대"
-    return "공포/패닉"
-
-
-def VKOSPI_REGIME_EMOJI(value: float) -> str:
-    if value < 20:
-        return "🟢"
-    elif value < 35:
-        return "🟡"
-    elif value < 50:
-        return "🟠"
-    return "🔴"
+# VKOSPI 레짐 구간 판정(vkospi_regime_label/vkospi_regime_emoji)은 src/utils/market_regime.py로
+# 분리됨 (2026-09-01, 코드 리뷰로 발견 — analyze_signal_metadata_correlation.py 같은 순수
+# 분석 스크립트가 이 함수 하나 때문에 이 무거운 운영 모듈 전체를 import하지 않도록)
 
 # 레버리지·인버스·해외지수 ETF 제외 키워드 (국내 섹터 ETF는 유지)
 ETF_EXCLUDE_KEYWORDS = (
@@ -450,7 +433,7 @@ class RealtimeMonitor:
         )
         if self._vkospi:
             vk = self._vkospi
-            header += f"\n{VKOSPI_REGIME_EMOJI(vk['value'])} VKOSPI {vk['value']:.1f} ({vk['change_pct']:+.1f}%, {vkospi_regime_label(vk['value'])})"
+            header += f"\n{vkospi_regime_emoji(vk['value'])} VKOSPI {vk['value']:.1f} ({vk['change_pct']:+.1f}%, {vkospi_regime_label(vk['value'])})"
         if self._futures:
             fut = self._futures
             basis_label = "콘탱고" if fut["basis"] >= 0 else "백워데이션"

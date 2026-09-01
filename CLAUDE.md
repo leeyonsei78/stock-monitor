@@ -783,6 +783,14 @@ alter table stock_signal_log add column disclosure_sentiment text;  -- 2026-09-0
 보류 — ④는 이미 `archive_investor_data.py`가 진행 중이라 시간이 필요할 뿐이고, ③은 새
 KIS TR 연동이 필요한 더 큰 스코프라 후순위).
 
+### 공유 헬퍼 분리 (`src/utils/market_regime.py`, 2026-09-01 코드 리뷰로 발견)
+`vkospi_regime_label()`/`vkospi_regime_emoji()`가 원래 `realtime_monitor.py`에 있었는데,
+아래 ①이 이 함수 하나 때문에 `realtime_monitor.py` 전체(KISApi/SlackNotifier/VirtualTrader/
+holidays 등 운영 의존성 큰 모듈들을 연쇄 import)를 끌고 오게 돼 있었음 — 순수 분석
+스크립트가 필요 이상으로 무거운 런타임 모듈에 결합되는 구조. 이 두 순수 함수만
+`src/utils/market_regime.py`로 분리해 양쪽이 가볍게 공유하도록 수정(`realtime_monitor.py`의
+`VKOSPI_REGIME_EMOJI`도 이 참에 소문자 `vkospi_regime_emoji`로 통일).
+
 ### ① `analyze_signal_metadata_correlation.py` (신규)
 VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여부/공시감성 7개 지표 각각을
 값의 유무 또는 구간(예: VKOSPI 레짐, 베이시스 콘탱고/백워데이션)으로 나눠 그룹별
@@ -820,9 +828,20 @@ VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여�
   (공시가 있어도 분류 불가하면 "중립"이 저장되고 공시 자체가 없으면 컬럼값은 None)
 - 위 `analyze_signal_metadata_correlation.py`의 분석 대상에 포함시켜 이 분류가 실제로
   방향성을 갖는지 데이터로 검증할 것 — 지금은 순수 가설
-- 유닛 테스트: `_classify_sentiment()` 4개 케이스(호재/악재/혼합/중립) + `get_today_disclosures()`
-  전체 파이프라인(페이지네이션·그룹핑·분류) mock 테스트로 확인. 실제 DART 서버 호출은
-  이 세션 샌드박스에서 검증 불가 — **배포 전 workflow_dispatch 드라이런으로 실제 공시
+- **키워드 반전 패턴 오탐 수정 (2026-09-01, 코드 리뷰로 발견)**: 단순 substring 매칭이라
+  일부 키워드가 정반대 의미의 공시 제목에도 매치되는 문제가 있었음 — 예: "단일판매·공급계약**해지**"
+  (악재)에 호재 키워드 "단일판매"가 그대로 들어있어 호재로 오분류, "상장폐지사유**해소**"(호재)에
+  악재 키워드 "상장폐지"가 들어있어 악재로 오분류, "관리종목지정**해제**"(호재)도 동일하게
+  악재로 오분류. 정확히 이 분류기가 검증하려는 "방향성이 실제로 있는가"라는 질문 자체를
+  왜곡시킬 수 있는 결함이라 우선 수정: "단일판매"는 중복이라 제거(더 구체적인 "공급계약체결"만
+  남기면 체결 건만 정확히 잡히고 해지 건은 안 걸림), "상장폐지"/"관리종목"은 반대 의미 접미어
+  ("해소"/"해제")가 동반되면 매치 제외하는 부정어 가드(`_BEARISH_NEGATION_GUARD`) 추가.
+  6개 반전 케이스 포함 회귀 테스트로 확인 — 다른 키워드에도 유사한 반전 패턴이 있을 수 있으나
+  전수 검증은 못 함(위 상관관계 분석으로 데이터가 쌓이면 이상 패턴이 드러날 것)
+- 유닛 테스트: `_classify_sentiment()` 4개 케이스(호재/악재/혼합/중립) + 위 반전 패턴 6개
+  회귀 케이스 + `get_today_disclosures()` 전체 파이프라인(페이지네이션·그룹핑·분류) mock
+  테스트로 확인. 실제 DART 서버 호출은 이 세션 샌드박스에서 검증 불가 — **배포 전
+  workflow_dispatch 드라이런으로 실제 공시
   제목이 예상한 키워드와 맞는지, `📋공시(...)` 배지가 정상 표시되는지 확인할 것**
 
 ### 배포 전 체크리스트 (2026-08-28 드라이런 3회로 검증 완료, 아래 결과 반영)

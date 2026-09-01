@@ -1,4 +1,4 @@
-"""DART(전자공시시스템) Open API — 당일 공시 종목 조회 (2026-08-28 추가)
+"""DART(전자공시시스템) Open API — 당일 공시 종목 조회 (2026-08-28 추가, 2026-09-01 호재/악재 분류 추가)
 
 무료 API 키 필요: https://opendart.fss.or.kr 가입 후 발급, 환경변수 DART_API_KEY로 설정.
 키가 없으면 기능 전체를 조용히 건너뜀 — SLACK_TRADE_ALLOWED_USERS(미설정 시 전부 차단)와
@@ -14,6 +14,14 @@
 검증하지 못한 상태로 작성됨 — DART Open API 자체는 공공 API로 스키마가 안정적이라 알려져
 있으나(status/message/list/stock_code 등), 실측 확인은 안 됨. 배포 전 GitHub Actions
 workflow_dispatch로 반드시 드라이런 검증할 것(DART_API_KEY를 GitHub Secrets에 먼저 등록해야 함).
+
+**호재/악재 분류 (2026-09-01 추가)**: 기존엔 "공시 있음/없음"만 boolean으로 기록해서, 이미
+API로 받아온 공시 제목(`report_nm`)을 그냥 버리고 있었음 — 새 API 호출 없이 파싱만 추가해
+공시 유형을 호재/악재/혼합/중립으로 대략 분류. **키워드 매칭 기반 1차 휴리스틱이라 정확도
+검증 안 됨**(예: "유상증자"가 항상 악재는 아니고, "합병"처럼 방향이 모호한 유형은 아예
+분류 대상에서 제외) — VKOSPI 레짐 구간과 동일한 성격("통계 검증 안 된 일반적 해석 관례
+참고 잠정치"). `analyze_signal_metadata_correlation.py`의 상관관계 분석 대상에 포함시켜
+실제로 방향성이 있는지 데이터로 검증할 것.
 """
 from __future__ import annotations
 import os
@@ -32,20 +40,44 @@ _PAGE_COUNT = 100      # DART API 페이지당 최대 100건
 _NO_DATA_STATUS = "013"   # DART 문서상 "조회된 데이터가 없습니다"
 _OK_STATUS = "000"
 
+# report_nm(공시 제목) 키워드 기반 1차 분류 — 위 docstring 참고, 검증 안 된 휴리스틱.
+# 방향이 모호하거나 맥락에 크게 좌우되는 유형(합병, 실적공시, 정기보고서 등)은 의도적으로 제외 —
+# 차라리 "중립"(분류 불가)으로 남기는 게 잘못된 방향을 단정하는 것보다 안전하다고 판단.
+_BULLISH_KEYWORDS = ("무상증자결정", "자기주식취득결정", "단일판매", "공급계약체결", "특허권취득")
+_BEARISH_KEYWORDS = (
+    "유상증자결정", "자기주식처분결정", "전환사채권발행결정", "신주인수권부사채권발행결정",
+    "감자결정", "상장폐지", "관리종목", "소송등의제기",
+)
 
-def get_today_disclosure_tickers() -> set[str]:
-    """오늘(KST) 국내 상장사 공시 목록에서 종목코드(6자리) 집합을 반환.
 
-    DART_API_KEY 미설정, 조회 실패, 응답 오류 등 무엇이 됐든 예외를 올리지 않고 빈 set을
+def _classify_sentiment(titles: list[str]) -> str:
+    """당일 한 종목의 공시 제목 목록을 종합해 호재/악재/혼합/중립 중 하나로 분류."""
+    text = " ".join(titles)
+    bullish = any(kw in text for kw in _BULLISH_KEYWORDS)
+    bearish = any(kw in text for kw in _BEARISH_KEYWORDS)
+    if bullish and bearish:
+        return "혼합"
+    if bullish:
+        return "호재"
+    if bearish:
+        return "악재"
+    return "중립"
+
+
+def get_today_disclosures() -> dict[str, dict]:
+    """오늘(KST) 국내 상장사 공시 목록을 종목코드별로 묶어 반환.
+
+    반환: {ticker(6자리): {"sentiment": "호재"|"악재"|"혼합"|"중립", "titles": [공시제목, ...]}}
+    DART_API_KEY 미설정, 조회 실패, 응답 오류 등 무엇이 됐든 예외를 올리지 않고 빈 dict를
     반환 — 이 기능이 꺼져 있거나 실패해도 스캔 자체엔 전혀 영향 없음.
     """
     api_key = os.getenv("DART_API_KEY")
     if not api_key:
         logger.info("DART_API_KEY 미설정 — 공시 조회 건너뜀")
-        return set()
+        return {}
 
     today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
-    tickers: set[str] = set()
+    titles_by_ticker: dict[str, list[str]] = {}
     try:
         for page in range(1, _MAX_PAGES + 1):
             resp = requests.get(
@@ -70,13 +102,20 @@ def get_today_disclosure_tickers() -> set[str]:
             for item in data.get("list", []):
                 code = (item.get("stock_code") or "").strip()
                 if len(code) == 6 and code.isdigit():
-                    tickers.add(code)
+                    titles_by_ticker.setdefault(code, []).append(item.get("report_nm") or "")
             total_page = int(data.get("total_page", 1) or 1)
             if page >= total_page:
                 break
     except Exception as e:
         logger.warning(f"DART 공시 조회 실패 — 건너뜀: {e}")
-        return set()
+        return {}
 
-    logger.info(f"DART 오늘 공시 종목 {len(tickers)}개 확인")
-    return tickers
+    result = {
+        ticker: {"sentiment": _classify_sentiment(titles), "titles": titles}
+        for ticker, titles in titles_by_ticker.items()
+    }
+    sentiment_counts = {}
+    for v in result.values():
+        sentiment_counts[v["sentiment"]] = sentiment_counts.get(v["sentiment"], 0) + 1
+    logger.info(f"DART 오늘 공시 종목 {len(result)}개 확인 (호재/악재/혼합/중립: {sentiment_counts})")
+    return result

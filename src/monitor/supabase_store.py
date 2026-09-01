@@ -39,10 +39,12 @@ class SupabaseSignalStore:
 
     # 최근 추가된 컬럼 — 마이그레이션 전이면 insert가 실패할 수 있어 save_signal()에서
     # 폴백 대상으로 취급 (2026-08-24, watch_blocked_by는 2026-08-25 추가, sp500_change_pct/
-    # usdkrw_change_pct/short_interest_ratio/has_disclosure는 2026-08-28 추가)
+    # usdkrw_change_pct/short_interest_ratio/has_disclosure는 2026-08-28 추가,
+    # disclosure_sentiment는 2026-09-01 추가)
     _OPTIONAL_SIGNAL_COLUMNS = (
         "vkospi", "futures_basis", "watch_blocked_by",
         "sp500_change_pct", "usdkrw_change_pct", "short_interest_ratio", "has_disclosure",
+        "disclosure_sentiment",
     )
 
     def save_signal(
@@ -60,6 +62,7 @@ class SupabaseSignalStore:
         usdkrw_change_pct: Optional[float] = None,
         short_interest_ratio: Optional[float] = None,
         has_disclosure: Optional[bool] = None,
+        disclosure_sentiment: Optional[str] = None,
     ):
         row = {
             "ticker": ticker,
@@ -91,6 +94,11 @@ class SupabaseSignalStore:
             row["short_interest_ratio"] = short_interest_ratio
         if has_disclosure is not None:
             row["has_disclosure"] = has_disclosure
+        # 공시 호재/악재 분류 (2026-09-01 추가) — dart_api._classify_sentiment() 참고,
+        # 키워드 매칭 기반 검증 안 된 휴리스틱. has_disclosure와 별개 컬럼(공시가 있어도
+        # 분류 불가하면 "중립"이 저장되고, 공시 자체가 없으면 None으로 남음)
+        if disclosure_sentiment is not None:
+            row["disclosure_sentiment"] = disclosure_sentiment
 
         try:
             self._client.table("stock_signal_log").insert(row).execute()
@@ -156,15 +164,25 @@ class SupabaseSignalStore:
             logger.error(f"신호 평가 대상 조회 실패: {e}")
             return []
 
+    _BASE_EVAL_COLUMNS = (
+        "id, ticker, signal_type, score, current_price, alerted_at, "
+        "return_1d_pct, return_3d_pct, expected_return_pct, reason"
+    )
+    # VKOSPI/코스피200선물베이시스/해외지수·환율/공매도비중/공시 — 아직 신호 점수엔 미반영,
+    # analyze_signal_metadata_correlation.py(2026-09-01 추가)의 상관관계 분석용으로 추가 조회
+    _METADATA_EVAL_COLUMNS = (
+        "vkospi, futures_basis, sp500_change_pct, usdkrw_change_pct, "
+        "short_interest_ratio, has_disclosure, disclosure_sentiment, watch_blocked_by"
+    )
+
     def get_evaluated_signals(self, since_iso: str) -> list[dict]:
-        """1일차 평가가 완료된 신호 전체 조회 (주간 추이 리포트용)"""
+        """1일차 평가가 완료된 신호 전체 조회 (주간 추이 리포트/신규 지표 상관관계 분석 공용).
+        확장 컬럼(_METADATA_EVAL_COLUMNS) 포함 조회가 실패하면(마이그레이션 전 환경 등)
+        기본 컬럼만으로 재시도 — save_signal()의 insert 폴백과 동일한 원칙(2026-09-01 추가)."""
         try:
             result = (
                 self._client.table("stock_signal_log")
-                .select(
-                    "id, ticker, signal_type, score, current_price, alerted_at, "
-                    "return_1d_pct, return_3d_pct, expected_return_pct, reason"
-                )
+                .select(f"{self._BASE_EVAL_COLUMNS}, {self._METADATA_EVAL_COLUMNS}")
                 .not_.is_("return_1d_pct", "null")
                 .gte("alerted_at", since_iso)
                 .order("alerted_at")
@@ -172,8 +190,20 @@ class SupabaseSignalStore:
             )
             return result.data or []
         except Exception as e:
-            logger.error(f"신호 평가 완료 목록 조회 실패: {e}")
-            return []
+            logger.warning(f"확장 컬럼 포함 조회 실패({e}) — 기본 컬럼만으로 재시도")
+            try:
+                result = (
+                    self._client.table("stock_signal_log")
+                    .select(self._BASE_EVAL_COLUMNS)
+                    .not_.is_("return_1d_pct", "null")
+                    .gte("alerted_at", since_iso)
+                    .order("alerted_at")
+                    .execute()
+                )
+                return result.data or []
+            except Exception as e2:
+                logger.error(f"신호 평가 완료 목록 조회 실패: {e2}")
+                return []
 
     def update_signal_evaluation(self, row_id: int, fields: dict):
         try:

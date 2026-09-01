@@ -771,8 +771,59 @@ alter table stock_signal_log add column sp500_change_pct numeric;
 alter table stock_signal_log add column usdkrw_change_pct numeric;
 alter table stock_signal_log add column short_interest_ratio numeric;
 alter table stock_signal_log add column has_disclosure boolean;
+alter table stock_signal_log add column disclosure_sentiment text;  -- 2026-09-01 추가, 아래 참고
 ```
-`save_signal()`이 기존 `vkospi`/`futures_basis`/`watch_blocked_by`와 동일한 폴백 패턴을 적용해뒀음 — 마이그레이션 전에도 이 4개 컬럼만 빼고 재시도해 신호 저장(쿨다운의 근간) 자체는 안 깨짐. 다만 이 필드들 값은 마이그레이션 전까진 DB에 안 쌓임.
+`save_signal()`이 기존 `vkospi`/`futures_basis`/`watch_blocked_by`와 동일한 폴백 패턴을 적용해뒀음 — 마이그레이션 전에도 이 5개 컬럼만 빼고 재시도해 신호 저장(쿨다운의 근간) 자체는 안 깨짐. 다만 이 필드들 값은 마이그레이션 전까진 DB에 안 쌓임.
+
+## 신규 지표 상관관계 분석 + 공시 호재/악재 분류 (2026-09-01 추가)
+사용자가 "적중률을 높이려면 추가로 어떤 정보가 필요한지" 검토를 요청해 우선순위를 매긴 결과,
+① 이미 수집만 하고 분석 안 하던 5개 정보성 지표(VKOSPI/코스피200선물베이시스/해외지수·환율/
+공매도비중/공시)의 상관관계 분석, ② DART 공시 제목(`report_nm`)을 호재/악재로 세분화 —
+두 가지를 우선 진행하기로 함(③ 외국인/기관 순매수 상위 종목 발굴, ④ 수급 히스토리 축적은
+보류 — ④는 이미 `archive_investor_data.py`가 진행 중이라 시간이 필요할 뿐이고, ③은 새
+KIS TR 연동이 필요한 더 큰 스코프라 후순위).
+
+### ① `analyze_signal_metadata_correlation.py` (신규)
+VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여부/공시감성 7개 지표 각각을
+값의 유무 또는 구간(예: VKOSPI 레짐, 베이시스 콘탱고/백워데이션)으로 나눠 그룹별
+방향적중률·평균수익률을 비교 — `backtest_technical_score.py`가 기술지표에 대해 하는 것과
+같은 방식을 이 지표들에 적용. **새 API 호출 없이** `stock_signal_log`에 이미 쌓인
+`get_evaluated_signals()` 결과만 사용.
+- `SupabaseSignalStore.get_evaluated_signals()`를 확장 — 기존엔 주간 리포트에 필요한
+  기본 컬럼만 셀렉트했는데, 위 7개 메타데이터 컬럼(`_METADATA_EVAL_COLUMNS`)을 추가로
+  셀렉트하도록 변경. 확장 컬럼 포함 조회가 실패하면(마이그레이션 전 등) 기본 컬럼만으로
+  재시도 — `save_signal()`의 insert 폴백과 동일 원칙
+  - 이 확장이 `weekly_accuracy_report.py`의 기존 호출도 그대로 씀 — 새 컬럼이 추가돼도 그
+    스크립트는 `.get()`으로 접근하지 않는 필드는 무시하므로 영향 없음(딕셔너리에 여분 키가
+    생기는 것뿐)
+- 그룹당 최소 5건 미만이면 생략(다른 리포트 스크립트와 동일한 노이즈 방지 원칙)
+- **표본 크기 주의**: VKOSPI/선물베이시스는 2026-08-24부터, 나머지는 2026-08-28부터 수집
+  시작 — 지금 당장 돌려도 결론 내리기엔 이름. 데이터가 쌓이면서 주기적으로 재실행할 도구
+- GitHub Actions 워크플로우는 아직 없음(수동 실행) — `backtest_trading_rules.py`와 동일
+
+### ② DART 공시 호재/악재 분류 (`src/api/dart_api.py`)
+기존 `get_today_disclosure_tickers()`(종목코드 집합만 반환)가 이미 API 응답에 들어있는
+공시 제목(`report_nm`)을 그냥 버리고 있었음 — 같은 API 호출로 이미 받아온 필드를 파싱만
+추가해 활용도를 높임.
+- `get_today_disclosures() -> dict[ticker, {"sentiment", "titles"}]`로 교체(기존 함수는
+  이 함수 하나로 통합돼 삭제됨 — 다른 호출부 없음을 확인 후 정리). `realtime_monitor.py`가
+  이 딕셔너리를 받아 기존 boolean 배지(`ticker in ...`)와 신규 `disclosure_sentiment` 저장
+  양쪽에 재사용
+- **키워드 매칭 기반 1차 휴리스틱, 정확도 검증 안 됨** — 호재(`무상증자결정`/`자기주식취득결정`/
+  `단일판매·공급계약체결`/`특허권취득` 등), 악재(`유상증자결정`/`자기주식처분결정`/
+  `전환사채권발행결정`/`감자결정`/`상장폐지`/`관리종목`/`소송등의제기` 등)로 분류, 한 종목에
+  양쪽 키워드가 다 있으면 "혼합", 매치 없으면 "중립". **방향이 모호한 유형(합병, 실적공시,
+  정기보고서 등)은 의도적으로 분류 대상에서 제외**해 "중립" 처리 — 틀린 방향을 단정하는
+  것보다 안전하다고 판단(VKOSPI 레짐 구간과 동일한 성격의 잠정치)
+- Slack 헤더 배지를 `📋공시` → `📋공시(호재)`/`📋공시(악재)`/`📋공시(혼합)`/`📋공시(중립)`로 확장
+- `stock_signal_log.disclosure_sentiment`(text)에 기록, `has_disclosure`와는 별개 컬럼
+  (공시가 있어도 분류 불가하면 "중립"이 저장되고 공시 자체가 없으면 컬럼값은 None)
+- 위 `analyze_signal_metadata_correlation.py`의 분석 대상에 포함시켜 이 분류가 실제로
+  방향성을 갖는지 데이터로 검증할 것 — 지금은 순수 가설
+- 유닛 테스트: `_classify_sentiment()` 4개 케이스(호재/악재/혼합/중립) + `get_today_disclosures()`
+  전체 파이프라인(페이지네이션·그룹핑·분류) mock 테스트로 확인. 실제 DART 서버 호출은
+  이 세션 샌드박스에서 검증 불가 — **배포 전 workflow_dispatch 드라이런으로 실제 공시
+  제목이 예상한 키워드와 맞는지, `📋공시(...)` 배지가 정상 표시되는지 확인할 것**
 
 ### 배포 전 체크리스트 (2026-08-28 드라이런 3회로 검증 완료, 아래 결과 반영)
 - [x] Supabase에 위 4개 컬럼 마이그레이션 SQL 실행 — 완료

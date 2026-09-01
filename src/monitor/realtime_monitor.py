@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from src.api.kis_api import KISApi
 from src.api.krx_data import get_short_interest_ratios
-from src.api.dart_api import get_today_disclosure_tickers
+from src.api.dart_api import get_today_disclosures
 from src.analysis.signal_generator import SignalGenerator, SignalType, TradeSignal
 from src.notification.slack_bot import SlackNotifier
 from src.monitor.virtual_trader import VirtualTrader
@@ -155,8 +155,9 @@ class RealtimeMonitor:
         self._global_market: Optional[dict] = None
         # 공매도 거래대금 상위 50 비중 — {ticker: {"ratio":, "date":}}, 스캔당 1회 갱신 (2026-08-28 추가)
         self._short_interest: dict[str, dict] = {}
-        # 오늘 공시 종목 집합(DART) — DART_API_KEY 없으면 항상 빈 set, 스캔당 1회 갱신 (2026-08-28 추가)
-        self._disclosure_tickers: set[str] = set()
+        # 오늘 공시 종목별 상세(DART) — {ticker: {"sentiment":, "titles":}}, DART_API_KEY 없으면
+        # 항상 빈 dict, 스캔당 1회 갱신 (2026-08-28 추가, 2026-09-01 호재/악재 분류 추가)
+        self._disclosures: dict[str, dict] = {}
         # 워치리스트 업종 ETF 대비 상대강도 — {ticker: pct_diff}, 스캔당 갱신 (2026-08-28 추가)
         self._sector_rs: dict[str, float] = {}
         # 워치리스트 업종 ETF 벤치마크 일봉 — {etf_ticker: ohlcv}, 스캔당 1회 갱신 (2026-08-28 추가)
@@ -214,13 +215,15 @@ class RealtimeMonitor:
             sp500 = gm.get("sp500")
             usdkrw = gm.get("usdkrw")
             short_info = self._short_interest.get(ticker)
+            disclosure_info = self._disclosures.get(ticker)
             self._store.save_signal(
                 ticker, signal_type.value, score, price, expected_return_pct, reason,
                 vkospi_value, futures_basis, watch_blocked_by,
                 sp500["change_pct"] if sp500 else None,
                 usdkrw["change_pct"] if usdkrw else None,
                 short_info["ratio"] if short_info else None,
-                ticker in self._disclosure_tickers,
+                disclosure_info is not None,
+                disclosure_info["sentiment"] if disclosure_info else None,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
@@ -432,9 +435,14 @@ class RealtimeMonitor:
         ah_badge = "  ⏰ _시간외_" if is_after_hours else ""
         market_name = current_info.get("market_name", "")
         market_tag = f" · {market_name}" if market_name else ""
-        # 당일 공시 배지 (2026-08-28 추가) — DART_API_KEY 없거나 조회 실패 시 self._disclosure_tickers가
-        # 항상 빈 set이라 자연스럽게 표시 안 됨
-        disclosure_tag = " · 📋공시" if signal.ticker in self._disclosure_tickers else ""
+        # 당일 공시 배지 (2026-08-28 추가) — DART_API_KEY 없거나 조회 실패 시 self._disclosures가
+        # 항상 빈 dict이라 자연스럽게 표시 안 됨. 호재/악재 분류(2026-09-01 추가, 검증 안 된
+        # 키워드 휴리스틱, dart_api._classify_sentiment 참고)가 있으면 괄호로 병기
+        disclosure_info = self._disclosures.get(signal.ticker)
+        if disclosure_info:
+            disclosure_tag = f" · 📋공시({disclosure_info['sentiment']})"
+        else:
+            disclosure_tag = ""
         header = (
             f"{emoji} *[{signal.signal_type.value}]  {signal.name} ({signal.ticker}{market_tag}{disclosure_tag})*{ah_badge}\n"
             f"현재가: *{signal.current_price:,}원*  (전일比 {change_sign}{change_pct:.2f}%)"
@@ -912,12 +920,12 @@ class RealtimeMonitor:
             logger.warning(f"공매도 비중 조회 실패: {e}")
             self._short_interest = {}
 
-        # 당일 공시 종목 — 스캔 1회당 1번만 조회, DART_API_KEY 없으면 빈 set (2026-08-28 추가)
+        # 당일 공시 종목 — 스캔 1회당 1번만 조회, DART_API_KEY 없으면 빈 dict (2026-08-28 추가)
         try:
-            self._disclosure_tickers = get_today_disclosure_tickers()
+            self._disclosures = get_today_disclosures()
         except Exception as e:
             logger.warning(f"공시 조회 실패: {e}")
-            self._disclosure_tickers = set()
+            self._disclosures = {}
 
         # 워치리스트 업종 ETF 벤치마크 — 매핑된 ETF 코드만 스캔 1회당 1번씩 조회 (2026-08-28 추가)
         # 종목 쪽(_analyze_stock)이 오늘 실시간가를 주입받는 것과 동일하게 ETF도 주입해야

@@ -665,6 +665,11 @@ class RealtimeMonitor:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
             return None
 
+        # 스캔 요약(_send_scan_summary)에서도 종목명 옆에 코스피/코스닥 표시하기 위해 저장
+        # (2026-08-31 추가) — _format_slack_message가 이미 쓰는 것과 동일한 필드(market_name,
+        # KISApi._normalize_market_name()로 정규화됨)를 그대로 재사용
+        signal.indicators["market_name"] = current_info.get("market_name", "")
+
         # 가상매매 진입 기록 — 쿨다운으로 실제 Slack 알림이 스킵되더라도 "최초 발견 시점" 기준으로
         # 열려야 하므로 HOLD 조기 반환 이전에 호출 (BUY/STRONG_BUY/WATCH 외엔 내부에서 no-op) (2026-08-24)
         self._virtual.open_if_new(signal)
@@ -785,9 +790,16 @@ class RealtimeMonitor:
 
             lines.append(f"\n*{label}* ({len(items)})")
             for sig in items[:self.SUMMARY_MAX_PER_GROUP]:
+                # day_pct: 전일 종가 대비 등락률 — technical_indicators.get_technical_score()의
+                # day_return((오늘 종가-전일 종가)/전일 종가), _format_slack_message의 change_pct
+                # (KIS 실시간 전일대비율)와 별개 계산이지만 같은 개념을 가리킴
                 day_pct = (sig.indicators or {}).get("day_return", 0.0) * 100
+                # 종목명 옆 코스피/코스닥 표시 (2026-08-31 추가) — _format_slack_message의
+                # market_tag와 동일한 필드·포맷 재사용
+                market_name = (sig.indicators or {}).get("market_name", "")
+                market_tag = f" · {market_name}" if market_name else ""
                 lines.append(
-                    f"• {sig.name or sig.ticker} ({sig.ticker}) · "
+                    f"• {sig.name or sig.ticker} ({sig.ticker}{market_tag}) · "
                     f"{sig.current_price:,}원 · {day_pct:+.1f}% · 점수 {sig.score:+.2f}"
                 )
             if len(items) > self.SUMMARY_MAX_PER_GROUP:

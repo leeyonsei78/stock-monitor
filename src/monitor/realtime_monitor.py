@@ -839,18 +839,26 @@ class RealtimeMonitor:
             # 꺼짐. 여기서 실패하면 주입만 건너뛰고 기존 ohlcv(전일 종가 기준)는 그대로 사용
             try:
                 idx_current = self._api.get_index_current(index_code)
-                prev_close = ohlcv[-1]["close"] if ohlcv else 0
-                if prev_close <= 0:
-                    logger.warning(f"{idx} 전일 종가 데이터 없음 — 오늘 실시간가 주입 스킵")
-                elif idx_current["price"] > 0 and abs(idx_current["price"] / prev_close - 1) <= 0.15:
-                    ohlcv = self._inject_today_row(ohlcv, {"price": idx_current["price"], "volume": 1})
-                elif idx_current["price"] > 0:
-                    logger.warning(
-                        f"{idx}({index_code}) 지수현재가 {idx_current['price']}가 전일종가({prev_close}) "
-                        f"대비 비정상적 등락 — 코드 매핑 오류 의심, 오늘 실시간가 주입 스킵(전일 종가로 대체)"
-                    )
             except Exception as e:
                 logger.warning(f"{idx} 지수현재가 조회 실패 — 오늘 실시간가 주입만 건너뜀(전일 종가로 대체): {e}")
+                idx_current = None
+            # API 호출과 그 이후 판정/주입 로직을 별도 try로 다시 분리 (2026-08-31 코드 리뷰로
+            # 추가 발견) — 같은 try에 있으면 _inject_today_row() 등 로컬 로직에서 예외가 나도
+            # "지수현재가 조회 실패"로 잘못 찍혀 실제로는 API가 정상이었는데 API 탓으로 오인하게 됨
+            if idx_current is not None:
+                try:
+                    prev_close = ohlcv[-1]["close"] if ohlcv else 0
+                    if prev_close <= 0:
+                        logger.warning(f"{idx} 전일 종가 데이터 없음 — 오늘 실시간가 주입 스킵")
+                    elif idx_current["price"] > 0 and abs(idx_current["price"] / prev_close - 1) <= 0.15:
+                        ohlcv = self._inject_today_row(ohlcv, {"price": idx_current["price"], "volume": 1})
+                    elif idx_current["price"] > 0:
+                        logger.warning(
+                            f"{idx}({index_code}) 지수현재가 {idx_current['price']}가 전일종가({prev_close}) "
+                            f"대비 비정상적 등락 — 코드 매핑 오류 의심, 오늘 실시간가 주입 스킵(전일 종가로 대체)"
+                        )
+                except Exception as e:
+                    logger.warning(f"{idx} 오늘 실시간가 반영 중 오류 — 주입 건너뜀(전일 종가로 대체): {e}")
             self._index_ohlcv[key] = ohlcv
 
         # VKOSPI(변동성지수) — 스캔 1회당 1번만 조회, 시장 레짐 참고용 (2026-08-24 추가)
@@ -917,9 +925,17 @@ class RealtimeMonitor:
             # 10일치 ohlcv까지 버려지던 문제. 실패하면 오늘 실시간가 주입만 건너뜀
             try:
                 etf_info = self._api.get_current_price(etf, market="J")
-                etf_ohlcv = self._inject_today_row(etf_ohlcv, etf_info)
             except Exception as e:
                 logger.warning(f"섹터 ETF({etf}) 실시간가 조회 실패 — 오늘 값 주입만 건너뜀(전일 종가로 대체): {e}")
+                etf_info = None
+            # API 호출과 주입 로직을 별도 try로 다시 분리 (2026-08-31 코드 리뷰로 추가 발견) —
+            # 같은 try에 있으면 _inject_today_row() 내부 오류도 "실시간가 조회 실패"로 잘못
+            # 찍혀 실제로는 API가 정상이었는데 API 탓으로 오인하게 됨
+            if etf_info is not None:
+                try:
+                    etf_ohlcv = self._inject_today_row(etf_ohlcv, etf_info)
+                except Exception as e:
+                    logger.warning(f"섹터 ETF({etf}) 오늘 값 반영 중 오류 — 주입 건너뜀(전일 종가로 대체): {e}")
             self._sector_ohlcv[etf] = etf_ohlcv
         self._sector_rs = {}
 

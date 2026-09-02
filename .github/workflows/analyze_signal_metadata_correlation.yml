@@ -71,3 +71,59 @@ jobs:
               note = " [표본 5건 미만 — 참고용]" if len(group) < 5 else ""
               print(f"  {label}: {hits}/{len(group)}적중(평균 {avg:+.1f}%, 평균종합점수 {avg_score:+.3f}){note}")
           PY
+
+      - name: (진단용, Slack 미전송) RSI·거래량 게이트 완화 시뮬레이션
+        # 매수 신호가 종합점수 매수선(0.30)은 넘었는데 RSI(≤60)·거래량(≥1.3배) AND조건에 막혀
+        # 관심(WATCH)으로 밀리는 비율이 85.5%(147/172)로 확인됨(2026-09-02) — 이 게이트를
+        # 완화하면 매수 표본이 늘어날지, 늘어난다면 그 표본이 실제로 쓸만한지(적중률) 확인하는
+        # 1회성 진단. watch_blocked_by(어느 게이트에 막혔는지, 2026-08-25 추가 컬럼)를 그대로
+        # 활용 — 새 API 호출도 코드 변경도 없이 이미 쌓인 데이터만으로 "그 게이트가 없었다면
+        # 어떻게 됐을지"를 실측할 수 있음. 실제 RSI/거래량 원시값은 저장 안 해서 "얼마나
+        # 완화해야 하는지"까지는 못 보고 "완화하면 늘어날 후보군의 품질"만 봄(아래 한계 참고).
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from collections import defaultdict
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+
+          KST = ZoneInfo("Asia/Seoul")
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          rows = store.get_evaluated_signals(since_iso)
+
+          watch_rows = [r for r in rows if r["signal_type"] == SignalType.WATCH.value and r.get("watch_blocked_by")]
+          total_watch = sum(1 for r in rows if r["signal_type"] == SignalType.WATCH.value)
+          print(f"[진단] 관심(WATCH) {total_watch}건 중 watch_blocked_by 기록된 {len(watch_rows)}건 분석")
+
+          def bucket(gates_str: str) -> str:
+              gates = set(g.strip() for g in gates_str.split(","))
+              if gates == {"rsi"}:
+                  return "RSI만 막힘 (rsi_max 완화 시 매수 전환 후보)"
+              if gates == {"volume"}:
+                  return "거래량만 막힘 (volume_min_ratio 완화 시 매수 전환 후보)"
+              if gates == {"rsi", "volume"}:
+                  return "RSI+거래량 둘 다 막힘 (둘 다 완화해야 전환)"
+              return f"기타({gates_str})"
+
+          buckets = defaultdict(list)
+          for r in watch_rows:
+              buckets[bucket(r["watch_blocked_by"])].append(r)
+
+          for label, group in buckets.items():
+              hits = sum(1 for r in group if r["return_1d_pct"] > 0)
+              avg = sum(r["return_1d_pct"] for r in group) / len(group)
+              print(f"  {label}: {len(group)}건, 상승 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
+
+          buy_types = {SignalType.BUY.value, SignalType.STRONG_BUY.value}
+          buy_rows = [r for r in rows if r["signal_type"] in buy_types]
+          if buy_rows:
+              hits = sum(1 for r in buy_rows if r["return_1d_pct"] > 0)
+              avg = sum(r["return_1d_pct"] for r in buy_rows) / len(buy_rows)
+              print(f"[비교기준] 현재 실제 매수(BUY) 신호: {len(buy_rows)}건, 적중 {hits}/{len(buy_rows)}({hits/len(buy_rows)*100:.0f}%), 평균 {avg:+.1f}%")
+          PY

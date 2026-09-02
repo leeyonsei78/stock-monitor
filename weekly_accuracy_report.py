@@ -136,6 +136,52 @@ def _sell_reason_breakdown(rows: list[dict]) -> list[str]:
     return lines
 
 
+# 매수 신호 "AND조건 우회 경로"별 세부 적중률 (2026-09-02 추가)
+# 도입 배경: 매수 적중률이 누적 39%(9/23)로 계속 저조한데(2026-09-02 확인), 매도 때(위
+# _sell_reason_breakdown, 2026-08-28)와 달리 이 저조함의 원인을 세부적으로 뜯어본 적이
+# 없었음 — signal_generator._classify_signal()의 매수 AND조건 중 두 가지는 정상 게이트를
+# "우회"하는 예외 경로임(stale_data_override로 종합점수 게이트 자체를 건너뛰는 경우,
+# 거래량 배율 미달이어도 당일 급등이면 거래량 게이트를 예외 처리하는 경우) — buy_reasons에
+# 남는 문구로 우회 경로를 탄 매수와 정상 경로로 들어온 매수를 구분해 적중률을 비교.
+# 매도 카테고리와 동일 원칙(중복 가능, 최소 5건)
+_BUY_OVERRIDE_CATEGORIES = (
+    ("당일급등오버라이드", "당일 급등"),      # 종합점수 게이트를 stale_data_override로 우회
+    ("급등거래량예외", "급등 거래량 예외"),   # 거래량 배율 게이트를 당일+5%로 우회
+)
+BUY_REASON_MIN_ROWS = 5
+
+
+def _buy_reason_breakdown(rows: list[dict]) -> list[str]:
+    """매수 신호를 정상 경로/우회 경로별로 나눠 적중률·평균수익률을 계산.
+    표본이 BUY_REASON_MIN_ROWS 미만인 카테고리는 노이즈 방지를 위해 생략."""
+    buy_rows = [r for r in rows if r["signal_type"] in BUY_TYPES and r.get("reason")]
+    lines = []
+    for label, keyword in _BUY_OVERRIDE_CATEGORIES:
+        group = [r for r in buy_rows if keyword in r["reason"]]
+        if len(group) < BUY_REASON_MIN_ROWS:
+            continue
+        hits = sum(1 for r in group if r["return_1d_pct"] > 0)
+        avg = sum(r["return_1d_pct"] for r in group) / len(group)
+        avg_score = sum(r["score"] for r in group) / len(group)
+        lines.append(
+            f"  {label}: {hits}/{len(group)}적중(평균 {avg:+.1f}%, 평균종합점수 {avg_score:+.3f})"
+        )
+
+    # 어느 우회 경로도 안 탄 "정상 조건 충족" 매수 — 우회 카테고리들의 여집합
+    normal_group = [
+        r for r in buy_rows
+        if not any(keyword in r["reason"] for _, keyword in _BUY_OVERRIDE_CATEGORIES)
+    ]
+    if len(normal_group) >= BUY_REASON_MIN_ROWS:
+        hits = sum(1 for r in normal_group if r["return_1d_pct"] > 0)
+        avg = sum(r["return_1d_pct"] for r in normal_group) / len(normal_group)
+        avg_score = sum(r["score"] for r in normal_group) / len(normal_group)
+        lines.append(
+            f"  정상조건충족(우회없음): {hits}/{len(normal_group)}적중(평균 {avg:+.1f}%, 평균종합점수 {avg_score:+.3f})"
+        )
+    return lines
+
+
 def _vt_stat_line(rows: list[dict]) -> str:
     """가상매매 청산 결과 요약 한 줄 (주간/누적 공용) — target_hit/stop_hit/reversal_sell/timeout
     비율이 그대로 ATR 배수(atr_stop_multiplier/atr_target_multiplier) 튜닝 근거가 됨:
@@ -237,6 +283,12 @@ def main():
             lines.append("")
             lines.append("📉 *매도 사유별 세부 적중률* (누적 전체, 카테고리 중복 가능)")
             lines.extend(breakdown)
+
+        buy_breakdown = _buy_reason_breakdown(rows)
+        if buy_breakdown:
+            lines.append("")
+            lines.append("📈 *매수 경로별 세부 적중률* (누적 전체, 카테고리 중복 가능)")
+            lines.extend(buy_breakdown)
 
     lines.append("")
     lines.append(_virtual_trading_section(vt_rows))

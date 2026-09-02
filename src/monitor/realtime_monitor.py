@@ -973,14 +973,22 @@ class RealtimeMonitor:
         # 기존 거래량 상위 결과를 재활용하는 방식을 택함, 위 CLAUDE.md 참고)
         min_trading_value = scr.get("min_trading_value", 0)
         added = 0
+        # 시장별 원본 응답 행 수 vs 스크리닝 통과 수를 나눠 기록 (2026-09-02 추가) — "0개 추가"가
+        # "API가 애초에 빈 리스트를 줬다"인지 "받아온 종목이 전부 스크리닝(가격/거래량/시총/ETF
+        # 키워드)에서 탈락했다"인지 로그만으로 구분이 안 되던 문제 보완. 장전 시간외(단일가매매)
+        # 구간처럼 거래량 자체가 미미할 때 원인 진단에 필요해 추가 — 실제 값 이상 여부와는 무관.
+        market_summary = []
         for iscd, index_key, label in (
             (KISApi.ISCD_KOSPI,  "KS11", "코스피"),
             (KISApi.ISCD_KOSDAQ, "KQ11", "코스닥"),
         ):
             if added >= self._scan_top_n:
                 break  # 앞 시장에서 이미 정원이 찼으면 조회 자체를 생략 (불필요한 API 호출 방지)
+            raw_count = 0
+            market_added = 0
             try:
                 for s in self._api.get_top_volume_stocks(market="J", limit=30, iscd=iscd):
+                    raw_count += 1
                     if added >= self._scan_top_n:
                         break
                     if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
@@ -1000,10 +1008,16 @@ class RealtimeMonitor:
                                        "market": "J", "index": index_key})
                         watchlist_tickers.add(s["ticker"])
                         added += 1
+                        market_added += 1
+                market_summary.append(f"{label} 원본 {raw_count}행/통과 {market_added}개")
             except Exception as e:
                 # 시장별로 독립 처리 — 한쪽이 실패해도 다른 쪽은 계속 (2026-08-14 코스피/코스닥 분리 원칙과 동일)
                 logger.error(f"거래량 상위 조회 실패({label}): {e}")
-        logger.info(f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개)")
+                market_summary.append(f"{label} 조회 실패")
+        logger.info(
+            f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개) — "
+            + ", ".join(market_summary)
+        )
 
         total      = len(stocks)
         buy_count  = 0

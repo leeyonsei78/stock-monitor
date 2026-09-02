@@ -95,10 +95,23 @@ def main():
     rows = store.get_evaluated_signals(since_iso)
     logger.info(f"평가 완료 신호 {len(rows)}건 조회")
 
+    # 전체 기준선(baseline) 계산 (2026-09-02 추가) — 각 그룹의 적중률을 무조건 50%(순수 무작위)와
+    # 비교하면 오판하기 쉬움: 이 프로젝트는 이미 매수 39%/매도 52%/관심 37% 등 신호 타입별로
+    # 적중률이 원래도 50%에서 벗어나 있다는 게 다른 리포트로 확인돼 있음(신호 임계값이 사실상
+    # 사문화된 상태, CLAUDE.md 참고) — 그 구조적 편차와 "이 지표가 추가로 주는 정보"를 구분하려면
+    # 50%가 아니라 전체 평균 적중률을 기준선으로 놓고 각 그룹이 그보다 높은지/낮은지를 봐야 함.
+    # 코드 리뷰 중 발견: VKOSPI 공포/패닉(40.5%)·선물베이시스 콘탱고(41.3%)가 50% 대비로는
+    # 통계적으로 유의하게 낮았지만, 두 그룹 다 전체 표본의 60~70%를 차지해 "그 지표의 특수 효과"가
+    # 아니라 "원래 그 정도가 전체 평균"이었을 가능성이 높았음(실제로 검산해보니 그랬음).
+    baseline_hits = [h for h in (_direction_hit(r["signal_type"], r["return_1d_pct"]) for r in rows) if h is not None]
+    baseline_rate = sum(baseline_hits) / len(baseline_hits) * 100 if baseline_hits else 0.0
+
     today_str = datetime.now(KST).strftime("%Y-%m-%d")
     lines = [
         f"🔬 *신규 정보성 지표 상관관계 분석* — {today_str}",
         f"평가 완료 신호 {len(rows)}건 대상 (그룹당 최소 {MIN_ROWS_PER_BUCKET}건 미만은 생략)",
+        f"전체 평균 방향적중률(기준선): {sum(baseline_hits)}/{len(baseline_hits)} ({baseline_rate:.0f}%) "
+        f"— 아래 그룹별 수치는 50%가 아니라 이 기준선과 비교할 것",
         "",
     ]
 

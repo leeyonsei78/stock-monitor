@@ -627,6 +627,14 @@ class RealtimeMonitor:
         # FDR은 당일 데이터를 volume=0으로 포함 후 필터링하므로 오늘 행이 없는 경우가 많음.
         # 거래량 상위 종목은 오늘 거래량이 높은 종목인데 FDR 어제 데이터로 vol_ratio 계산하면 조건 미달.
         ohlcv = self._inject_today_row(ohlcv, current_info)
+        # ohlcv 마지막 행이 실제로 오늘 날짜인지 (2026-09-03 추가) — 장전 등 실시간 거래량이
+        # 아직 0이면 위 주입이 스킵되어 마지막 행이 어제 이전 데이터로 남는데, 이 경우
+        # technical_indicators의 day_return이 "오늘 등락률"이 아니라 과거 거래일 등락률을
+        # 담게 됨. signal_generator의 stale_data_override가 이를 "당일 급락/급등"으로
+        # 오인하지 않도록 이 플래그로 전달 (9/3 08:13 KST 장전 드라이런에서 4종목이 실제로는
+        # 전일 등락률(-5.6~-6.8%)을 "당일 급락"으로 오인해 매도 오발동한 걸 실측으로 발견)
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        has_today_data = bool(ohlcv) and ohlcv[-1]["date"] == today_str
 
         if len(ohlcv) < 30:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
@@ -651,6 +659,7 @@ class RealtimeMonitor:
                 # 종목 소속 시장에 맞는 벤치마크 (코스피=KS11 / 코스닥=KQ11, 2026-08-26)
                 # 조회 실패한 지수는 None이라 상대강도가 중립(0.0)으로 degrade됨 — 기존 동작과 동일
                 index_ohlcv=(self._index_ohlcv or {}).get(index_key),
+                has_today_data=has_today_data,
             )
         except Exception as e:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")
@@ -973,14 +982,22 @@ class RealtimeMonitor:
         # 기존 거래량 상위 결과를 재활용하는 방식을 택함, 위 CLAUDE.md 참고)
         min_trading_value = scr.get("min_trading_value", 0)
         added = 0
+        # 시장별 원본 응답 행 수 vs 스크리닝 통과 수를 나눠 기록 (2026-09-02 추가) — "0개 추가"가
+        # "API가 애초에 빈 리스트를 줬다"인지 "받아온 종목이 전부 스크리닝(가격/거래량/시총/ETF
+        # 키워드)에서 탈락했다"인지 로그만으로 구분이 안 되던 문제 보완. 장전 시간외(단일가매매)
+        # 구간처럼 거래량 자체가 미미할 때 원인 진단에 필요해 추가 — 실제 값 이상 여부와는 무관.
+        market_summary = []
         for iscd, index_key, label in (
             (KISApi.ISCD_KOSPI,  "KS11", "코스피"),
             (KISApi.ISCD_KOSDAQ, "KQ11", "코스닥"),
         ):
             if added >= self._scan_top_n:
                 break  # 앞 시장에서 이미 정원이 찼으면 조회 자체를 생략 (불필요한 API 호출 방지)
+            raw_count = 0
+            market_added = 0
             try:
                 for s in self._api.get_top_volume_stocks(market="J", limit=30, iscd=iscd):
+                    raw_count += 1
                     if added >= self._scan_top_n:
                         break
                     if s["ticker"] not in watchlist_tickers and s["ticker"].isdigit() and len(s["ticker"]) == 6:
@@ -1000,10 +1017,16 @@ class RealtimeMonitor:
                                        "market": "J", "index": index_key})
                         watchlist_tickers.add(s["ticker"])
                         added += 1
+                        market_added += 1
+                market_summary.append(f"{label} 원본 {raw_count}행/통과 {market_added}개")
             except Exception as e:
                 # 시장별로 독립 처리 — 한쪽이 실패해도 다른 쪽은 계속 (2026-08-14 코스피/코스닥 분리 원칙과 동일)
                 logger.error(f"거래량 상위 조회 실패({label}): {e}")
-        logger.info(f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개)")
+                market_summary.append(f"{label} 조회 실패")
+        logger.info(
+            f"거래량 상위 조회 완료: {added}개 추가 (목표 {self._scan_top_n}개) — "
+            + ", ".join(market_summary)
+        )
 
         total      = len(stocks)
         buy_count  = 0

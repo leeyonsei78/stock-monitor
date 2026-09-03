@@ -122,7 +122,7 @@ class SignalGenerator:
         걸 방지하기 위해 _classify_signal로 전달됨. 기본값 True는 이 파라미터를 명시하지 않는
         기존 호출부(백테스트 등)의 동작을 그대로 유지하기 위함
         """
-        tech_result = self._tech.get_technical_score(ohlcv, index_ohlcv)
+        tech_result = self._tech.get_technical_score(ohlcv, index_ohlcv, has_today_data=has_today_data)
         inv_result = self._investor.get_investor_score(investor_current, investor_history)
 
         tech_raw = tech_result["score"]
@@ -368,7 +368,9 @@ class SignalGenerator:
             watch_gates.append("rsi")
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
-        volume_ok = vol_ratio >= buy_cfg["volume_min_ratio"] or day_return >= 0.05
+        # has_today_data=False(장전 등)면 day_return이 "오늘"이 아니라 과거 거래일 등락률이라
+        # 이 예외 조건에 쓰지 않음 (2026-09-03, stale_data_override와 동일한 원인·동일한 가드)
+        volume_ok = vol_ratio >= buy_cfg["volume_min_ratio"] or (has_today_data and day_return >= 0.05)
         if not volume_ok:
             meets_all = False
             watch_reasons.append(

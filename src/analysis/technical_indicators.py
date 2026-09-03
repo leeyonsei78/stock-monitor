@@ -309,9 +309,15 @@ class TechnicalIndicators:
         }
 
     # ── 종합 기술적 점수 ─────────────────────────────────────────
-    def get_technical_score(self, ohlcv: list[dict], index_ohlcv: Optional[list[dict]] = None) -> dict:
+    def get_technical_score(
+        self, ohlcv: list[dict], index_ohlcv: Optional[list[dict]] = None, has_today_data: bool = True
+    ) -> dict:
         """모든 지표를 종합한 기술적 분석 점수 반환
         index_ohlcv: 벤치마크 지수(KOSPI 등) 일봉 — 상대강도 계산용, 없으면 상대강도는 중립(0.0)
+        has_today_data: ohlcv 마지막 행이 실제 오늘 데이터인지 (2026-09-03 추가) — False면(장전 등)
+        day_return이 "오늘"이 아니라 과거 거래일 등락률이라 볼린저의 "당일 급등 시 돌파 지속" 해석에
+        쓰지 않음(signal_generator의 stale_data_override와 동일한 원인·동일한 가드).
+        indicators["day_return"]는 정보성 표시(스캔 요약 등)를 위해 원본값을 그대로 반환함.
         """
         if len(ohlcv) < 60:
             logger.warning(f"데이터 부족: {len(ohlcv)}개 (최소 60개 필요)")
@@ -331,7 +337,7 @@ class TechnicalIndicators:
         day_return = (current_price - prev_close) / prev_close if prev_close > 0 else 0.0
 
         bb_df = self.calc_bollinger(df)
-        bb_sig = self.bollinger_signal(bb_df, current_price, day_return)
+        bb_sig = self.bollinger_signal(bb_df, current_price, day_return if has_today_data else 0.0)
 
         ma_df = self.calc_moving_averages(df)
         ma_sig = self.ma_signal(ma_df, current_price)

@@ -127,3 +127,36 @@ jobs:
               avg = sum(r["return_1d_pct"] for r in buy_rows) / len(buy_rows)
               print(f"[비교기준] 현재 실제 매수(BUY) 신호: {len(buy_rows)}건, 적중 {hits}/{len(buy_rows)}({hits/len(buy_rows)*100:.0f}%), 평균 {avg:+.1f}%")
           PY
+
+      - name: (진단용, Slack 미전송) 9/3 08:13 KST 장전 매도 알림 4건 reason 확인
+        # 9/3 08:13 KST scan_top_n=60 드라이런에서 현대차·HD한국조선해양·두산에너빌리티·
+        # 우리기술투자가 종합점수가 -0.15보다 높은데도(예: -0.019) 매도로 분류됨 — 코드
+        # 추적 결과 stale_data_override(당일 급락 시 매도)가 의심됨: 장전이라 실시간
+        # 거래량이 0이면 _inject_today_row가 오늘 행 주입을 건너뛰어 day_return이 "오늘"이
+        # 아니라 FDR의 마지막 실제 거래일(어제) 등락률을 담게 되고, 이게 "당일 급락"으로
+        # 잘못 라벨링될 수 있음. get_evaluated_signals()는 return_1d_pct가 채워진(1일 경과)
+        # 신호만 반환해 방금 발생한 신호는 안 잡히므로, stock_signal_log를 직접 조회해
+        # reason 원문으로 가설을 확인
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from supabase import create_client
+
+          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          tickers = ["005380", "009540", "034020", "041190"]
+          result = (
+              client.table("stock_signal_log")
+              .select("ticker,signal_type,score,reason,alerted_at")
+              .in_("ticker", tickers)
+              .order("alerted_at", desc=True)
+              .limit(20)
+              .execute()
+          )
+          print(f"[진단] 조회 {len(result.data)}건 (최근 20건 중 대상 티커 필터링 전)")
+          for r in result.data:
+              print(f"  [{r['ticker']}] {r['signal_type']} 점수={r['score']:+.3f} @ {r['alerted_at']}")
+              print(f"    reason: {r.get('reason')}")
+          PY

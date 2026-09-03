@@ -160,3 +160,74 @@ jobs:
               print(f"  [{r['ticker']}] {r['signal_type']} 점수={r['score']:+.3f} @ {r['alerted_at']}")
               print(f"    reason: {r.get('reason')}")
           PY
+
+      - name: (진단용, Slack 미전송) 가상매매 손절 청산 후 목표가 도달 여부 확인
+        # 가상매매 누적 손익이 여전히 마이너스(-0.8%)인 이유 진단 (2026-09-03, 사용자 질의) —
+        # 손절 비율(55%, 26/47)이 익절 비율(26%, 12/47)보다 훨씬 높은데, 현재 ATR 배수
+        # (stop×1.5 / target×2.5, 손익분기 승률 약 37.5%)로는 26%는 손익분기에 못 미침.
+        # "신호 자체가 틀렸다"와 "방향은 맞았는데 손절폭이 너무 좁아 일찍 끊겼다"를 구분하기
+        # 위해, 손절 청산된 포지션들이 진입 시점부터 max_hold_days(10거래일) 안에 원래
+        # 목표가까지 도달했을지를 FinanceDataReader로 사후 확인. 새 실시간 API 호출 없이
+        # 이미 청산된 포지션 + 공개 일봉 데이터만 사용
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from supabase import create_client
+          import FinanceDataReader as fdr
+
+          KST = ZoneInfo("Asia/Seoul")
+          MAX_HOLD_DAYS = 10  # config.yaml virtual_trading.max_hold_days
+
+          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          result = (
+              client.table("stock_virtual_position")
+              .select("ticker,name,entry_price,entry_at,exit_price,exit_at,exit_reason,target_price,return_pct")
+              .eq("status", "closed")
+              .eq("exit_reason", "stop_hit")
+              .gte("exit_at", since_iso)
+              .order("exit_at")
+              .execute()
+          )
+          rows = result.data or []
+          print(f"[진단] 손절 청산 {len(rows)}건 — 진입 후 {MAX_HOLD_DAYS}거래일 내 원래 목표가 도달 여부 확인")
+
+          would_hit = 0
+          checked = 0
+          errors = 0
+          for r in rows:
+              ticker = r["ticker"]
+              target = r.get("target_price")
+              if not target:
+                  continue
+              entry_at = datetime.fromisoformat(r["entry_at"].replace("Z", "+00:00")).astimezone(KST)
+              try:
+                  df = fdr.DataReader(ticker, start=entry_at.date(), end=entry_at.date() + timedelta(days=30))
+              except Exception as e:
+                  errors += 1
+                  print(f"  [{ticker}] 조회 실패: {e}")
+                  continue
+              if df.empty:
+                  continue
+              window = df.iloc[:MAX_HOLD_DAYS]
+              max_high = window["High"].max() if len(window) else None
+              hit = max_high is not None and max_high >= target
+              checked += 1
+              if hit:
+                  would_hit += 1
+              print(
+                  f"  [{ticker}] {r.get('name')}: 진입 {r['entry_price']:,} / 목표 {target:,.0f} / "
+                  f"손절청산가 {r['exit_price']:,} / 이후 {len(window)}거래일 최고가 "
+                  f"{max_high:,.0f} -> {'목표 도달' if hit else '미도달'}"
+              )
+
+          if checked:
+              print(f"[결론] 손절 {checked}건 중 원래 목표가까지 갔다면 도달했을 것: {would_hit}건 ({would_hit/checked*100:.0f}%) | 조회 실패 {errors}건")
+          else:
+              print("[결론] 분석 가능한 손절 건 없음")
+          PY

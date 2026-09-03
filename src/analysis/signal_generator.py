@@ -109,11 +109,18 @@ class SignalGenerator:
         index_ohlcv: Optional[list[dict]] = None,
         position_stop_loss_pct: Optional[float] = None,
         position_take_profit_pct: Optional[float] = None,
+        has_today_data: bool = True,
     ) -> TradeSignal:
         """종합 매매 신호 생성
         index_ohlcv: 벤치마크 지수 일봉 (상대강도 신호용, 선택)
         position_stop_loss_pct/position_take_profit_pct: 보유 중 종목의 매수 시점 ATR 기준
         (Position.stop_loss_pct/take_profit_pct) — 없으면 config.yaml risk 고정값 사용
+        has_today_data: ohlcv 마지막 행이 실제로 오늘 실시간가로 채워졌는지 (2026-09-03 추가).
+        False면(장전 등 실시간 거래량이 아직 0이라 _inject_today_row가 주입을 건너뛴 경우)
+        ohlcv 마지막 행은 어제 이전 데이터라 day_return이 "오늘 등락률"이 아니라 과거 거래일의
+        등락률을 담고 있음 — stale_data_override가 이를 "당일 급락/급등"으로 잘못 해석하는
+        걸 방지하기 위해 _classify_signal로 전달됨. 기본값 True는 이 파라미터를 명시하지 않는
+        기존 호출부(백테스트 등)의 동작을 그대로 유지하기 위함
         """
         tech_result = self._tech.get_technical_score(ohlcv, index_ohlcv)
         inv_result = self._investor.get_investor_score(investor_current, investor_history)
@@ -133,7 +140,7 @@ class SignalGenerator:
 
         signal_type, reason, watch_blocked_by = self._classify_signal(
             final_score, tech_result, inv_result, holding_qty, avg_price, current_price,
-            position_stop_loss_pct, position_take_profit_pct,
+            position_stop_loss_pct, position_take_profit_pct, has_today_data,
         )
 
         recommended_qty = 0
@@ -259,6 +266,7 @@ class SignalGenerator:
         current_price: int,
         position_stop_loss_pct: Optional[float] = None,
         position_take_profit_pct: Optional[float] = None,
+        has_today_data: bool = True,
     ) -> tuple[SignalType, str, list[str]]:
         """반환값 3번째 항목(watch_gates): WATCH로 분류될 때 어떤 매수 AND조건에 막혔는지
         구조화된 코드 리스트("rsi"/"volume"/"foreign"/"ma20") — reason 텍스트는 사람이 읽기 위한
@@ -294,7 +302,12 @@ class SignalGenerator:
         is_stale_investor = inv_current["raw"].get("is_stale", False)
         stale_cfg = self._cfg.get("stale_data_override", {})
         stale_threshold = stale_cfg.get("day_return_threshold", 0.05)
-        stale_sell_override = is_stale_investor and day_return <= -stale_threshold
+        # has_today_data=False(장전 등 실시간 거래량이 아직 0이라 오늘 행이 주입 안 된 경우, 2026-09-03
+        # 추가)면 day_return이 "오늘"이 아니라 OHLCV에 실제로 잡힌 마지막 과거 거래일의 등락률임 —
+        # 이걸 "당일 급락/급등"으로 오인해 오버라이드가 오발동하는 걸 방지. 실측: 9/3 08:13 KST
+        # 장전(현대차 등 KIS 실시간가 기준 당일 0.00%)에 이 값이 -5.6~-6.8%로 잡혀 4종목이
+        # "당일 급락"으로 잘못 매도 분류됨 — 실제로는 전일(9/2)의 등락률이었음
+        stale_sell_override = is_stale_investor and has_today_data and day_return <= -stale_threshold
         # 매수 오버라이드는 외국인/기관이 최근 며칠 연속 순매도 중이면 적용 안 함 (2026-08-24 추가) —
         # "미집계라 못 믿는 데이터"라는 전제로 만들었는데, 실제로는 3일 전(전일 데이터) 시점 기준
         # 최근 며칠간의 진짜 매도세를 무시하고 "당일 급등했으니 사라"는 셈이 되는 문제 발견
@@ -306,7 +319,8 @@ class SignalGenerator:
             or inv_hist.get("institution_streak", 0) <= -sell_streak_block
         )
         stale_buy_override = (
-            is_stale_investor and day_return >= stale_threshold and not has_real_selling_streak
+            is_stale_investor and has_today_data and day_return >= stale_threshold
+            and not has_real_selling_streak
         )
 
         # 매도 조건 (OR)

@@ -627,6 +627,14 @@ class RealtimeMonitor:
         # FDR은 당일 데이터를 volume=0으로 포함 후 필터링하므로 오늘 행이 없는 경우가 많음.
         # 거래량 상위 종목은 오늘 거래량이 높은 종목인데 FDR 어제 데이터로 vol_ratio 계산하면 조건 미달.
         ohlcv = self._inject_today_row(ohlcv, current_info)
+        # ohlcv 마지막 행이 실제로 오늘 날짜인지 (2026-09-03 추가) — 장전 등 실시간 거래량이
+        # 아직 0이면 위 주입이 스킵되어 마지막 행이 어제 이전 데이터로 남는데, 이 경우
+        # technical_indicators의 day_return이 "오늘 등락률"이 아니라 과거 거래일 등락률을
+        # 담게 됨. signal_generator의 stale_data_override가 이를 "당일 급락/급등"으로
+        # 오인하지 않도록 이 플래그로 전달 (9/3 08:13 KST 장전 드라이런에서 4종목이 실제로는
+        # 전일 등락률(-5.6~-6.8%)을 "당일 급락"으로 오인해 매도 오발동한 걸 실측으로 발견)
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        has_today_data = bool(ohlcv) and ohlcv[-1]["date"] == today_str
 
         if len(ohlcv) < 30:
             logger.info(f"[{ticker}] 데이터 부족 스킵 ({len(ohlcv)}일, 최소 30일 필요)")
@@ -651,6 +659,7 @@ class RealtimeMonitor:
                 # 종목 소속 시장에 맞는 벤치마크 (코스피=KS11 / 코스닥=KQ11, 2026-08-26)
                 # 조회 실패한 지수는 None이라 상대강도가 중립(0.0)으로 degrade됨 — 기존 동작과 동일
                 index_ohlcv=(self._index_ohlcv or {}).get(index_key),
+                has_today_data=has_today_data,
             )
         except Exception as e:
             logger.error(f"[{ticker}] 신호 생성 실패: {e}")

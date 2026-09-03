@@ -231,3 +231,160 @@ jobs:
           else:
               print("[결론] 분석 가능한 손절 건 없음")
           PY
+
+      - name: (진단용, Slack 미전송) 같은 방향 반복 알림 vs 전환/최초 알림 적중률
+        # 매수 적중률(39%)이 낮은 원인으로 "신호가 노이즈성 순간 조건 충족에도 즉시 발동한다"는
+        # 가설을 검증하려 했으나, 원래 계획("연속 스캔에서 몇 회 연속 조건을 유지했는지")은
+        # stock_signal_log만으로는 측정 불가능한 것으로 확인됨 — alert_cooldown_sec(4시간) 때문에
+        # 같은 종목의 로그 행은 이미 최소 4시간 이상 떨어져 있어 "연속 스캔 유지 여부"가 애초에
+        # 이 테이블에 안 남음(스캔마다의 전체 분류 결과를 로그하지 않고 실제 알림만 저장하는 구조).
+        # 대신 측정 가능한 인접 개념으로 대체: 같은 종목의 "직전 알림"과 방향(매수측/매도측)이
+        # 같았던 알림(=반복 신호)과, 직전 알림이 없거나 방향이 바뀐 알림(=최초/전환 신호)을
+        # 나눠 적중률을 비교 — 방향이 여러 알림 주기에 걸쳐 유지되는 신호가 더 신뢰할 만한지 확인
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from collections import defaultdict
+          from supabase import create_client
+          from src.analysis.signal_generator import SignalType
+
+          BUY_FAMILY = {SignalType.BUY.value, SignalType.STRONG_BUY.value}
+          SELL_FAMILY = {SignalType.SELL.value, SignalType.STRONG_SELL.value}
+
+          def family(sig_type):
+              if sig_type in BUY_FAMILY:
+                  return "buy"
+              if sig_type in SELL_FAMILY:
+                  return "sell"
+              return "watch"
+
+          def is_hit(r):
+              return r["return_1d_pct"] < 0 if family(r["signal_type"]) == "sell" else r["return_1d_pct"] > 0
+
+          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          result = (
+              client.table("stock_signal_log")
+              .select("ticker,signal_type,alerted_at,return_1d_pct")
+              .order("ticker")
+              .order("alerted_at")
+              .limit(5000)
+              .execute()
+          )
+          rows = result.data or []
+          print(f"[진단] 전체 신호 로그 {len(rows)}건(평가 여부 무관) — 매수측/매도측만 대상, 관심(WATCH)은 제외")
+
+          by_ticker = defaultdict(list)
+          for r in rows:
+              by_ticker[r["ticker"]].append(r)
+
+          repeat_group, switch_group = [], []
+          for ticker, trows in by_ticker.items():
+              trows.sort(key=lambda r: r["alerted_at"])
+              prev_family = None
+              for r in trows:
+                  fam = family(r["signal_type"])
+                  if r.get("return_1d_pct") is not None and fam in ("buy", "sell"):
+                      (repeat_group if prev_family == fam else switch_group).append(r)
+                  prev_family = fam
+
+          for label, group in [
+              ("연속(직전 알림과 같은 방향)", repeat_group),
+              ("전환/최초(직전과 다른 방향 또는 첫 알림)", switch_group),
+          ]:
+              if len(group) < 5:
+                  print(f"  {label}: {len(group)}건 (5건 미만, 참고용)")
+                  continue
+              hits = sum(1 for r in group if is_hit(r))
+              avg = sum(r["return_1d_pct"] for r in group) / len(group)
+              print(f"  {label}: {len(group)}건, 적중 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
+          PY
+
+      - name: (진단용, Slack 미전송) 거래대금 구간별 적중률
+        # min_trading_value 스크리닝(strategy.yaml)이 기본값 0(미적용)인 채로 방치돼있음 —
+        # 실패 신호가 저유동성 종목에 쏠려있는지 확인해 하한선 설정 근거를 찾기 위한 진단.
+        # stock_signal_log엔 신호 시점 거래량이 저장 안 돼 있어(current_price만 있음),
+        # FinanceDataReader로 해당 알림 날짜의 종가×거래량을 사후 재구성해 근사 거래대금을 산출
+        # (실시간 스크리닝이 쓰는 "당일 실시간가×실시간거래량"과는 다른 근사치 — 종가 기준 일봉이라
+        # 장중 시점의 실제 거래대금과는 오차가 있을 수 있음, 참고용). 종목당 1회씩만 조회해 API 호출 최소화
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from collections import defaultdict
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+          import FinanceDataReader as fdr
+
+          KST = ZoneInfo("Asia/Seoul")
+          SELL_TYPES = {SignalType.SELL.value, SignalType.STRONG_SELL.value}
+
+          def is_hit(r):
+              return r["return_1d_pct"] < 0 if r["signal_type"] in SELL_TYPES else r["return_1d_pct"] > 0
+
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          rows = store.get_evaluated_signals(since_iso)
+          print(f"[진단] 평가완료 신호 {len(rows)}건 — 거래대금(종가×거래량 근사치) 구간별 적중률")
+
+          by_ticker = defaultdict(list)
+          for r in rows:
+              by_ticker[r["ticker"]].append(r)
+
+          enriched = []
+          errors = 0
+          for ticker, trows in by_ticker.items():
+              dates = [datetime.fromisoformat(r["alerted_at"].replace("Z", "+00:00")).astimezone(KST).date() for r in trows]
+              start, end = min(dates), max(dates)
+              try:
+                  df = fdr.DataReader(ticker, start=start - timedelta(days=5), end=end + timedelta(days=1))
+              except Exception as e:
+                  errors += len(trows)
+                  print(f"  [{ticker}] 조회 실패: {e}")
+                  continue
+              if df.empty:
+                  errors += len(trows)
+                  continue
+              df.index = df.index.date
+              for r, d in zip(trows, dates):
+                  if d not in df.index:
+                      errors += 1
+                      continue
+                  try:
+                      close = float(df.loc[d, "Close"])
+                      volume = float(df.loc[d, "Volume"])
+                  except Exception:
+                      errors += 1
+                      continue
+                  enriched.append((r, close * volume))
+
+          print(f"[진단] 거래대금 산출 성공 {len(enriched)}건, 실패/스킵 {errors}건")
+
+          if len(enriched) >= 15:
+              enriched.sort(key=lambda x: x[1])
+              n = len(enriched)
+              tercile = n // 3
+              buckets = [
+                  ("하위 1/3 (저유동성)", enriched[:tercile]),
+                  ("중위 1/3", enriched[tercile:2 * tercile]),
+                  ("상위 1/3 (고유동성)", enriched[2 * tercile:]),
+              ]
+
+              total_hits = sum(1 for r, _ in enriched if is_hit(r))
+              print(f"[비교기준] 전체 평균 적중률: {total_hits}/{len(enriched)}({total_hits/len(enriched)*100:.0f}%)")
+
+              for label, group in buckets:
+                  if not group:
+                      continue
+                  hits = sum(1 for r, _ in group if is_hit(r))
+                  lo, hi = group[0][1], group[-1][1]
+                  print(f"  {label}: {len(group)}건, 거래대금 {lo:,.0f}~{hi:,.0f}원, 적중 {hits}/{len(group)}({hits/len(group)*100:.0f}%)")
+          else:
+              print("[결론] 표본 부족(15건 미만) — 판단 보류")
+          PY

@@ -364,8 +364,14 @@ class SignalGenerator:
         rsi_ok = rsi <= buy_cfg["rsi_max"]
         if not rsi_ok:
             meets_all = False
-            watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
-            watch_gates.append("rsi")
+            # RSI가 watch_rsi_ceiling 이상이면 관심(WATCH)도 보내지 않음 (2026-09-04 추가) —
+            # RSI만 막혀서 관심으로 밀린 신호를 RSI 구간별로 나눠보니 70 이상 구간만
+            # 통계적으로 유의하게 나빴음(z≈-2.67, 평균 -2.5%, config/strategy.yaml 참고) —
+            # 그 구간은 근접 매수 후보로도 보지 않고 조용히 보유(HOLD) 처리
+            watch_rsi_ceiling = buy_cfg.get("watch_rsi_ceiling", float("inf"))
+            if rsi < watch_rsi_ceiling:
+                watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
+                watch_gates.append("rsi")
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
         # has_today_data=False(장전 등)면 day_return이 "오늘"이 아니라 과거 거래일 등락률이라

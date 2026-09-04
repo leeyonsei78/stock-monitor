@@ -388,3 +388,65 @@ jobs:
           else:
               print("[결론] 표본 부족(15건 미만) — 판단 보류")
           PY
+
+      - name: (진단용, Slack 미전송) RSI만 막힌 관심(WATCH) — RSI 값 구간별 적중률
+        # 관심(WATCH) 누적 적중률 35%(58/166, 무작위 대비 z≈-3.9로 유의하게 나쁨)의 대부분이
+        # "RSI만 막힘" 그룹(111건, 상승 34%, z≈-3.3)에서 나옴 — 사용자가 WATCH 발송 기준을
+        # 좁히는 방향을 요청해 구체적으로 어떻게 좁힐지 검토하는 진단. reason 텍스트에 이미
+        # 박혀있는 실제 RSI 값("RSI 과열(63.7>60)")을 파싱해 60~65/65~70/70+ 구간별로 갈라
+        # "RSI가 얼마나 과열됐을 때부터 진짜 나쁜지" 확인 — 전부 다 나쁘면 RSI 게이트에 막힌
+        # WATCH를 통째로 끄는 게 맞고, 경한 과열(60~65)만 괜찮다면 그 구간만 남기는 절충안이 가능
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          import re
+          from collections import defaultdict
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+
+          KST = ZoneInfo("Asia/Seoul")
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          rows = store.get_evaluated_signals(since_iso)
+
+          watch_rows = [
+              r for r in rows
+              if r["signal_type"] == SignalType.WATCH.value
+              and r.get("watch_blocked_by") == "rsi"
+              and r.get("reason")
+          ]
+          print(f"[진단] RSI만 막힌 관심(WATCH) {len(watch_rows)}건 — RSI 값 구간별 적중률")
+
+          pattern = re.compile(r"RSI 과열\(([\d.]+)>")
+          buckets = defaultdict(list)
+          unparsed = 0
+          for r in watch_rows:
+              m = pattern.search(r["reason"])
+              if not m:
+                  unparsed += 1
+                  continue
+              rsi_val = float(m.group(1))
+              if rsi_val < 65:
+                  label = "60~65"
+              elif rsi_val < 70:
+                  label = "65~70"
+              else:
+                  label = "70+"
+              buckets[label].append((r, rsi_val))
+          if unparsed:
+              print(f"  (reason 파싱 실패 {unparsed}건 — 집계 제외)")
+
+          for label in ["60~65", "65~70", "70+"]:
+              group = buckets.get(label, [])
+              if len(group) < 5:
+                  print(f"  RSI {label}: {len(group)}건 (5건 미만, 참고용)")
+                  continue
+              hits = sum(1 for r, _ in group if r["return_1d_pct"] > 0)
+              avg = sum(r["return_1d_pct"] for r, _ in group) / len(group)
+              print(f"  RSI {label}: {len(group)}건, 상승 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
+          PY

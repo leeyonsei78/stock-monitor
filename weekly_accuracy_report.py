@@ -87,8 +87,19 @@ def _group_stats(rows: list[dict]) -> list[str]:
         w_avg = sum(r["return_1d_pct"] for r in watch_rows) / len(watch_rows)
         parts.append(f"관심(WATCH) {len(watch_rows)}건 중 상승 {w_hits}건(평균 {w_avg:+.1f}%)")
 
-    avg_score = sum(r["score"] for r in rows) / len(rows)
-    parts.append(f"평균 종합점수 {avg_score:+.3f}")
+    # 매수/매도/관심 타입별로 쪼개서 표시 (2026-09-04 수정) — 이전엔 세 타입을 그대로 섞어
+    # 평균 냈는데, 매수·관심은 항상 양수(score≥0.30)·매도는 대부분 음수로 설계상 반대 부호라
+    # 섞으면 "그 주 신호 품질"이 아니라 "그 주 매수/매도/관심 비율"을 반영하는 숫자가 됨 —
+    # 실제로 이 블렌드 값 때문에 "매도 시점 평균 종합점수가 오히려 양수"라는 잘못된 근거를
+    # 한 번 댄 적 있음(CLAUDE.md 2026-09-01 정정 참고). 위 매수/매도 적중률과 동일하게 타입별로 분리
+    score_parts = []
+    for name, types in [("매수", BUY_TYPES), ("매도", SELL_TYPES), ("관심", {WATCH_TYPE})]:
+        score_group = [r for r in rows if r["signal_type"] in types]
+        if score_group:
+            avg_score = sum(r["score"] for r in score_group) / len(score_group)
+            score_parts.append(f"{name} {avg_score:+.3f}")
+    if score_parts:
+        parts.append(f"평균 종합점수({' / '.join(score_parts)})")
 
     streak_morning = sum(
         1 for r in rows

@@ -128,11 +128,23 @@ _SELL_REASON_CATEGORIES = (
 )
 SELL_REASON_MIN_ROWS = 5  # 카테고리별 최소 표본 — 이보다 적으면 생략(노이즈 방지, 위 MIN_ROWS_FOR_REPORT와 동일 원칙)
 
+# RSI 과매수/외국인 연속매도 단독조건 가드를 score<0 → standalone_score_max(-0.15)로 강화한 날짜
+# (config/strategy.yaml sell_conditions.standalone_score_max, 2026-08-28 도입). 아래 "누적 전체"
+# 매도 사유별 적중률은 이 날짜 이전(느슨한 가드) 데이터가 그대로 섞여 있어, 실측(2026-09-04
+# 정식 검토, CLAUDE.md 참고)으로는 이 날짜 이후만 필터링하면 외국인연속매도단독 38%→62%,
+# 당일급락오버라이드 56%→65%로 꽤 다르게 나옴 — "누적 전체" 한 줄만 보면 가드 강화 효과를
+# 실제보다 나쁘게 오판하기 쉬워, 이 날짜 이후로 필터링한 버전을 별도로 병기 (2026-09-04 추가)
+STANDALONE_GUARD_DATE = date(2026, 8, 28)
 
-def _sell_reason_breakdown(rows: list[dict]) -> list[str]:
+
+def _sell_reason_breakdown(rows: list[dict], since: date | None = None) -> list[str]:
     """매도 신호를 발동 사유별로 나눠 적중률·평균수익률·평균종합점수를 계산.
-    표본이 SELL_REASON_MIN_ROWS 미만인 카테고리는 노이즈 방지를 위해 생략."""
+    표본이 SELL_REASON_MIN_ROWS 미만인 카테고리는 노이즈 방지를 위해 생략.
+    since가 주어지면 그 날짜(KST, alerted_at 기준) 이후 알림만 대상으로 함 — rows는
+    main()에서 미리 "_alerted_kst" 키가 채워진 상태로 전달되어야 함."""
     sell_rows = [r for r in rows if r["signal_type"] in SELL_TYPES and r.get("reason")]
+    if since is not None:
+        sell_rows = [r for r in sell_rows if r["_alerted_kst"].date() >= since]
     lines = []
     for label, keyword in _SELL_REASON_CATEGORIES:
         group = [r for r in sell_rows if keyword in r["reason"]]
@@ -294,6 +306,15 @@ def main():
             lines.append("")
             lines.append("📉 *매도 사유별 세부 적중률* (누적 전체, 카테고리 중복 가능)")
             lines.extend(breakdown)
+
+        guard_breakdown = _sell_reason_breakdown(rows, since=STANDALONE_GUARD_DATE)
+        if guard_breakdown:
+            lines.append("")
+            lines.append(
+                f"📉 *매도 사유별 세부 적중률* (standalone_score_max 가드 적용일 "
+                f"{STANDALONE_GUARD_DATE.strftime('%m/%d')} 이후만, 카테고리 중복 가능)"
+            )
+            lines.extend(guard_breakdown)
 
         buy_breakdown = _buy_reason_breakdown(rows)
         if buy_breakdown:

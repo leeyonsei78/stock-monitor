@@ -364,14 +364,11 @@ class SignalGenerator:
         rsi_ok = rsi <= buy_cfg["rsi_max"]
         if not rsi_ok:
             meets_all = False
-            # RSI가 watch_rsi_ceiling 이상이면 관심(WATCH)도 보내지 않음 (2026-09-04 추가) —
-            # RSI만 막혀서 관심으로 밀린 신호를 RSI 구간별로 나눠보니 70 이상 구간만
-            # 통계적으로 유의하게 나빴음(z≈-2.67, 평균 -2.5%, config/strategy.yaml 참고) —
-            # 그 구간은 근접 매수 후보로도 보지 않고 조용히 보유(HOLD) 처리
-            watch_rsi_ceiling = buy_cfg.get("watch_rsi_ceiling", float("inf"))
-            if rsi < watch_rsi_ceiling:
-                watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
-                watch_gates.append("rsi")
+            # watch_gates/reason은 항상 정확하게 채움(RSI+거래량 등 복합 게이트 통계 집계가
+            # 이 값에 의존 — 2026-08-25 참고) — 관심(WATCH) 발송 자체를 억제할지는 아래
+            # "RSI만 단독으로 막힌 경우"에서 별도로 판단 (watch_rsi_ceiling)
+            watch_reasons.append(f"RSI 과열({rsi:.1f}>{buy_cfg['rsi_max']})")
+            watch_gates.append("rsi")
         else:
             buy_reasons.append(f"RSI 적정({rsi:.1f})")
         # has_today_data=False(장전 등)면 day_return이 "오늘"이 아니라 과거 거래일 등락률이라
@@ -422,7 +419,15 @@ class SignalGenerator:
                 return SignalType.STRONG_BUY, " / ".join(buy_reasons), []
             return SignalType.BUY, " / ".join(buy_reasons), []
 
-        if score_ok and watch_reasons:
+        # RSI가 유일하게 막힌 게이트이면서 watch_rsi_ceiling 이상이면 관심(WATCH)도 보내지 않고
+        # 조용히 보유 처리 (2026-09-04 추가, 데이터 기반) — RSI만 막혀서 관심으로 밀린 신호를
+        # RSI 구간별로 나눠보니 70 이상 구간만 통계적으로 유의하게 나빴음(z≈-2.67, 평균 -2.5%,
+        # config/strategy.yaml 참고). RSI 외에 다른 게이트(거래량 등)도 같이 막혀 있으면 그
+        # 조합에 대한 개별 근거가 없어 억제 대상에서 제외(watch_reasons/watch_gates는 그대로
+        # 정확하게 유지되므로 그 경우엔 RSI 과열 사실도 포함해 정상적으로 관심 발송됨)
+        watch_rsi_ceiling = buy_cfg.get("watch_rsi_ceiling", float("inf"))
+        rsi_only_overheated = watch_gates == ["rsi"] and rsi >= watch_rsi_ceiling
+        if score_ok and watch_reasons and not rsi_only_overheated:
             # 종합점수는 매수선을 넘었는데 RSI/거래량 조건에 막힌 근접 사례 — 조용히 묻지 않고 알림 (2026-08-21)
             # stale_buy_override로 score_ok가 된 경우 실제 점수는 매수선 미달이므로 문구 구분 (2026-08-24)
             score_basis = (

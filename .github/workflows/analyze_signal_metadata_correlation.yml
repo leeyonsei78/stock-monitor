@@ -450,3 +450,51 @@ jobs:
               avg = sum(r["return_1d_pct"] for r, _ in group) / len(group)
               print(f"  RSI {label}: {len(group)}건, 상승 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
           PY
+
+      - name: (진단용, Slack 미전송) 매수 신호 — 비활성 AND조건(20일선/외국인순매수)·시간대별 적중률
+        # 적중률 강화 검토 — 매수(BUY) 적중률이 누적 33%(10/30)로 계속 저조한데, strategy.yaml의
+        # foreign_net_buy/price_above_ma20 AND조건이 둘 다 꺼져있어(2026-08-12/18 완화) 이 두
+        # 조건을 "통과한 매수"와 "미적용이라 그냥 통과된 매수"를 구분한 적이 없었음 — 재활성화가
+        # 적중률에 도움될지 확인하는 1회성 진단. buy_reasons 텍스트에 이미 "20일선 위"/"외국인
+        # 순매수" 문구가 조건 충족 시에만 남으므로 이걸로 구분(새 API 호출 없이 기존 reason 재사용).
+        # 추가로 당일 투자자 데이터가 아직 미집계인 09~14시대(수급 30% 성분이 중립 처리돼 사실상
+        # 기술점수 70%만으로 매수가 나가는 시간대)와 그 이후를 나눠 시간대 효과도 같이 확인.
+        # 표본이 누적 30건뿐이라 세부 구간은 5건 미만으로 생략될 수 있음(참고용 진단)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+
+          KST = ZoneInfo("Asia/Seoul")
+          BUY_TYPES = {SignalType.BUY.value, SignalType.STRONG_BUY.value}
+
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          rows = store.get_evaluated_signals(since_iso)
+          buy_rows = [r for r in rows if r["signal_type"] in BUY_TYPES and r.get("reason")]
+          print(f"[진단] 매수(BUY/STRONG_BUY) {len(buy_rows)}건 — 비활성 AND조건·시간대별 적중률")
+
+          def bucket_print(label, group):
+              if len(group) < 5:
+                  print(f"  {label}: {len(group)}건 (5건 미만, 참고용)")
+                  return
+              hits = sum(1 for r in group if r["return_1d_pct"] > 0)
+              avg = sum(r["return_1d_pct"] for r in group) / len(group)
+              print(f"  {label}: {len(group)}건, 적중 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
+
+          bucket_print("20일선 위(통과)", [r for r in buy_rows if "20일선 위" in r["reason"]])
+          bucket_print("20일선 위 아님(미적용 조건이라 그냥 통과)", [r for r in buy_rows if "20일선 위" not in r["reason"]])
+          bucket_print("외국인 순매수 있음", [r for r in buy_rows if "외국인 순매수" in r["reason"]])
+          bucket_print("외국인 순매수 없음(미적용 조건이라 그냥 통과)", [r for r in buy_rows if "외국인 순매수" not in r["reason"]])
+
+          for r in buy_rows:
+              r["_alerted_kst"] = datetime.fromisoformat(r["alerted_at"].replace("Z", "+00:00")).astimezone(KST)
+          bucket_print("09~14시대(당일 투자자 데이터 미집계 추정 구간)", [r for r in buy_rows if r["_alerted_kst"].hour < 15])
+          bucket_print("15시 이후(당일 투자자 데이터 집계 추정 구간)", [r for r in buy_rows if r["_alerted_kst"].hour >= 15])
+          PY

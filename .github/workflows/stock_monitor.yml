@@ -54,23 +54,3 @@ jobs:
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
         run: .venv/bin/python run_monitor_once.py
-
-      - name: (임시 진단용, Slack 미전송) PER/PBR 필드 실측 확인
-        # 2026-09-11: get_current_price()에 방금 추가한 per/pbr 파싱이 실제 KIS 응답과
-        # 맞는지 쿨다운과 무관하게 직접 확인 — 확인 후 이 스텝은 제거 예정
-        env:
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
-          KIS_IS_MOCK: 'true'
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          .venv/bin/python - <<'PY'
-          from src.api.kis_api import KISApi
-
-          api = KISApi()
-          for ticker in ["005930", "000660", "035420"]:
-              info = api.get_current_price(ticker)
-              print(f"[{ticker}] {info.get('name')}: per={info.get('per')}, pbr={info.get('pbr')}, price={info.get('price')}")
-          PY

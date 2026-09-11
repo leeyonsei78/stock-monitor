@@ -372,6 +372,44 @@ class KISApi:
             "days_to_expiry": int(out.get("hts_rmnn_dynu", 0) or 0),
         }
 
+    def get_order_book(self, ticker: str, market: str = "J") -> dict:
+        """실시간 호가창(매수/매도 총잔량) 조회 (2026-09-11 추가)
+
+        투자자 수급(외국인/기관 순매수, 종합점수 30%)은 EOD(장마감 후) 집계치인데, 이 성분을
+        투자자 수급 아카이브로 직접 검증한 결과 당일 순매수 부호가 익일 수익률과 사실상
+        무관함을 확인함(외국인 48% vs 49%, 기관 48% vs 49% — 위 "신호 성과 추적" 섹션
+        2026-09-11 항목 참고). 이건 그 순간의 실시간 매수·매도 압력이라 EOD 수급과는
+        성격이 근본적으로 다름 — EOD가 안 통했다고 실시간도 안 통한다고 볼 근거는 없어
+        별도 검증 대상으로 우선 정보성 지표로만 추가.
+
+        TR FHKST01010200(주식현재가 호가/예상체결). 총매수호가잔량(total_bidp_rsqn)이
+        총매도호가잔량(total_askp_rsqn)보다 많으면 매수 대기 물량이 우세하다는 뜻으로
+        흔히 해석됨 — 아직 신호 점수엔 미반영, 정보성 표시 + DB 기록만(다른 신규 지표와
+        동일 원칙).
+
+        ⚠️ 개발 환경 제약 — 이 세션 샌드박스는 KIS API가 차단돼 있어 필드명
+        (total_askp_rsqn/total_bidp_rsqn)을 라이브로 검증하지 못함(다른 신규 지표 추가 때와
+        동일한 제약). 필드명이 다르면 잔량이 계속 0으로만 나오고 아래 WARNING 로그가 남음
+        (get_investor_data()의 "필드명 변경 감지용" 패턴과 동일) — **배포 전 반드시
+        workflow_dispatch 드라이런으로 실제 값이 0이 아닌지 확인할 것.**
+        """
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            "FHKST01010200",
+            {"FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": ticker},
+            base=self._quote_url,
+        )
+        out = data.get("output1", {})
+        total_ask = _safe_int(out.get("total_askp_rsqn"))
+        total_bid = _safe_int(out.get("total_bidp_rsqn"))
+        if total_ask == 0 and total_bid == 0:
+            logger.warning(f"[{ticker}] 호가 잔량 전부 0 — 필드명 변경 감지용, raw: {out}")
+        return {
+            "total_ask_qty": total_ask,
+            "total_bid_qty": total_bid,
+            "bid_ask_ratio": (total_bid / total_ask) if total_ask > 0 else None,
+        }
+
     def get_global_market(self) -> dict:
         """해외 지수·환율 스냅샷 (2026-08-28 추가)
 

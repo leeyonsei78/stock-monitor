@@ -44,7 +44,7 @@ class SupabaseSignalStore:
     _OPTIONAL_SIGNAL_COLUMNS = (
         "vkospi", "futures_basis", "watch_blocked_by",
         "sp500_change_pct", "usdkrw_change_pct", "short_interest_ratio", "has_disclosure",
-        "disclosure_sentiment", "per", "pbr", "bid_ask_ratio",
+        "disclosure_sentiment", "per", "pbr", "bid_ask_ratio", "execution_strength",
     )
 
     def save_signal(
@@ -66,6 +66,7 @@ class SupabaseSignalStore:
         per: Optional[float] = None,
         pbr: Optional[float] = None,
         bid_ask_ratio: Optional[float] = None,
+        execution_strength: Optional[float] = None,
     ):
         row = {
             "ticker": ticker,
@@ -112,6 +113,10 @@ class SupabaseSignalStore:
         # 실시간 압력, 아직 점수엔 미반영(위 PER/PBR과 동일 원칙)
         if bid_ask_ratio is not None:
             row["bid_ask_ratio"] = bid_ask_ratio
+        # 당일 체결강도(TR FHKST01010300 tday_rltv, 100 기준 매수/매도 우위) — 위 호가잔량과
+        # 마찬가지로 EOD 수급과 다른 실시간 지표, 아직 점수엔 미반영(2026-09-11 추가)
+        if execution_strength is not None:
+            row["execution_strength"] = execution_strength
 
         try:
             self._client.table("stock_signal_log").insert(row).execute()
@@ -186,7 +191,7 @@ class SupabaseSignalStore:
     _METADATA_EVAL_COLUMNS = (
         "vkospi, futures_basis, sp500_change_pct, usdkrw_change_pct, "
         "short_interest_ratio, has_disclosure, disclosure_sentiment, watch_blocked_by, "
-        "per, pbr, bid_ask_ratio"
+        "per, pbr, bid_ask_ratio, execution_strength"
     )
 
     def get_evaluated_signals(self, since_iso: str) -> list[dict]:

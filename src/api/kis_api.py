@@ -410,6 +410,46 @@ class KISApi:
             "bid_ask_ratio": (total_bid / total_ask) if total_ask > 0 else None,
         }
 
+    def get_execution_strength(self, ticker: str, market: str = "J") -> Optional[float]:
+        """체결강도(당일, 매수체결량/매도체결량×100 기준) 조회 (2026-09-11 추가)
+
+        최초 호가잔량(bid_ask_ratio) 추가 시 "체결강도는 필드명을 특정할 자신이 없어 제외"로
+        스코프에서 뺐던 항목 — 이번에 KIS 공식 GitHub(koreainvestment/open-trading-api)
+        examples_llm/domestic_stock/inquire_ccnl/의 소스코드(TR·파라미터)와 테스트 스크립트
+        (필드→한글명 매핑에 `'tday_rltv': '당일 체결강도'` 명시)로 필드명을 확정, 완전히 별개인
+        블로그 글에서 실제 응답 예시값(114.05, 100 기준 매수우위 정의와 부합)까지 교차 확인함.
+
+        TR FHKST01010300(주식현재가 체결, [v1_국내주식-009]). 응답 output은 최근 체결
+        30건 리스트인데 tday_rltv는 각 행에 그 시점까지의 누적치로 반복 기록돼 있어
+        output[0](최신 체결)만 읽으면 됨. 100 기준 — 100 초과면 매수체결이 매도체결보다
+        많다(매수 우세), 100 미만이면 매도 우세로 흔히 해석됨.
+
+        호가잔량(bid_ask_ratio, 위 참고)과 마찬가지로 EOD 투자자 수급과 달리 그 순간의
+        실시간 체결 압력이라 성격이 다름 — 아직 신호 점수엔 미반영, 정보성 표시 + DB
+        기록만(다른 신규 지표와 동일 원칙).
+
+        ⚠️ 개발 환경 제약 — 이 세션 샌드박스는 KIS API가 차단돼 있어 필드명(tday_rltv)을
+        라이브로 검증하지 못함(다른 신규 지표 추가 때와 동일한 제약, 다만 공식 소스 교차
+        검증으로 확신도는 호가잔량 때보다 높음). 필드명이 다르면 계속 None만 나오고 아래
+        WARNING 로그가 남음(get_investor_data()의 "필드명 변경 감지용" 패턴과 동일) —
+        **배포 전 반드시 workflow_dispatch 드라이런으로 실제 값이 나오는지 확인할 것.**
+        """
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-ccnl",
+            "FHKST01010300",
+            {"FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": ticker},
+            base=self._quote_url,
+        )
+        rows = data.get("output", [])
+        if not rows:
+            logger.warning(f"[{ticker}] 체결강도 응답 output 비어있음 — 필드명 변경 감지용, raw: {data}")
+            return None
+        raw = rows[0].get("tday_rltv")
+        strength = _safe_float(raw) if raw not in (None, "") else None
+        if strength is None:
+            logger.warning(f"[{ticker}] 체결강도(tday_rltv) 파싱 실패 — 필드명 변경 감지용, raw: {rows[0]}")
+        return strength
+
     def get_global_market(self) -> dict:
         """해외 지수·환율 스냅샷 (2026-08-28 추가)
 

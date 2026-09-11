@@ -1002,6 +1002,25 @@ VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여�
   ```
 - 데이터가 쌓이면 매수/매도 잔량비율이 높은 매수 신호가 실제로 적중률이 나은지 `analyze_signal_metadata_correlation.py`로 검증할 것 — 지금은 다른 정보성 지표와 마찬가지로 순수 표시만
 
+## 체결강도 추가 (`execution_strength`, 2026-09-11 추가, 필드명 조사 후 구현)
+호가잔량(`bid_ask_ratio`) 도입 당시 "필드명을 특정할 자신이 없다"는 이유로 스코프에서 제외했던 항목 — 사용자 요청으로 필드명 조사부터 다시 진행해 확정, 즉시 구현.
+- **필드명 조사 경위**: 이 세션 샌드박스는 KIS API를 직접 호출할 수 없어(개발 환경 제약, 위 참고) 대신 웹 조사로 필드명을 확정하는 방식 채택 — 대부분의 참고 사이트(KIS 개발자포털 apiportal.koreainvestment.com, wikidocs.net, velog.io, grep.app, data.jsdelivr.com, repos.ecosyste.ms 등)가 이 세션의 네트워크 egress 정책에 막혀 있었으나 `github.com`/`raw.githubusercontent.com`은 예외적으로 허용됨을 확인 — KIS 공식 GitHub(`koreainvestment/open-trading-api`)의 실제 예제 소스코드를 직접 읽는 방식으로 우회
+  - `examples_llm/domestic_stock/inquire_ccnl/inquire_ccnl.py`(TR·엔드포인트·파라미터 원본) + 같은 폴더의 `chk_inquire_ccnl.py`(필드→한글명 매핑 딕셔너리에 `'tday_rltv': '당일 체결강도'` 명시)로 1차 확인
+  - 이 세션의 학습 지식만으로 추측했던 후보 TR(FHPST01680000, `/ranking/volume-power` 등)은 전부 근거 없는 추측이라 확인 시도조차 안 하고, 실제 코드로 확인된 값만 채택 — 이 프로젝트의 "실측 안 된 필드명을 자신 있게 쓰지 않음" 원칙을 필드명 리서치 단계에서도 그대로 적용
+  - 완전히 별개인 3rd-party 블로그(velog.io, 직접 fetch는 막혔지만 검색 스니펫으로 확인)에서 같은 필드명(`tday_rltv`)의 실제 응답 예시값(`114.05`)을 확인해 교차검증 — 100 기준 매수우위 정의(체결강도>100=매수우위)와 값의 크기가 부합함도 재확인
+  - **선물옵션 실시간(WebSocket) API들의 `cttr` 필드와 혼동 주의**: 조사 중 `domestic_futureoption`의 여러 실시간 체결가 WS API(TR `실시간-010`/`실시간-022`/`실시간-064`/`실시간-032`)에서도 "체결강도"라는 같은 한글명의 필드(`cttr`)가 나왔으나, 이들은 ① 선물옵션 상품용이고 ② WebSocket 상시 연결이 필요해 이 프로젝트의 10분 주기 폴링(GitHub Actions) 구조와 근본적으로 안 맞음 — 국내주식 REST 폴링용인 `tday_rltv`(TR FHKST01010300)만 채택, `cttr`은 사용 안 함
+- **구현**: `KISApi.get_execution_strength(ticker, market)` 추가 — TR `FHKST01010300`(주식현재가 체결, `[v1_국내주식-009]`), 엔드포인트 `/uapi/domestic-stock/v1/quotations/inquire-ccnl`. 응답 `output`은 최근 체결 30건 리스트인데 `tday_rltv`는 각 행에 그 시점까지의 누적치가 반복 기록돼 있어 `output[0]`(최신)만 읽음. 응답이 비었거나 파싱 실패 시 `get_order_book()`과 동일한 "필드명 변경 감지용" WARNING 로그
+- **종목당 새 API 호출 1회 추가** — 호가잔량과 동일 원칙으로 쿨다운을 통과해 실제로 알림이 나갈 종목만 조회(`_analyze_stock()`에서 `order_book` 조회 직후)
+- Slack 메시지에서 기존 `🧾 실시간 호가` 블록에 같이 표시하도록 통합(`🧾 실시간 호가·체결`로 라벨 변경) — 호가잔량·체결강도 둘 다 같은 "그 순간의 실시간 매수/매도 압력" 계열 정보라 묶는 게 자연스럽다고 판단. `체결강도 120.5 (100 기준 매수우위)` 형태로 표시, 100 초과=매수우위/100 미만=매도우위/100=균형. 둘 중 하나만 있어도 블록 표시(각자 독립적으로 값 유무 체크) — 아직 신호 점수엔 미반영, `stock_signal_log.execution_strength` 컬럼 기록만
+- `save_signal()`/`_mark_alerted()`에 기존 per/pbr/bid_ask_ratio와 동일한 폴백 패턴 적용 — `_OPTIONAL_SIGNAL_COLUMNS`/`_METADATA_EVAL_COLUMNS`에 추가(이번엔 처음부터 양쪽에 같이 추가 — PER/PBR 때 `_METADATA_EVAL_COLUMNS` 누락했던 실수 재발 방지)
+- 합성 데이터로 헤더 블록 렌더링 5가지 케이스(호가+체결강도 모두/체결강도만/호가만/둘 다 없음/호가 전량 0+체결강도 100균형) + `save_signal()` 위치 인자 순서(mock Supabase client로 `execution_strength`가 정확한 컬럼에 들어가는지) 확인
+- **⚠️ 개발 환경 제약 — 이 세션 샌드박스는 KIS API가 차단돼 있어 개발 중엔 `tday_rltv` 필드명을 라이브로 검증 못함**(다른 신규 지표와 동일한 제약) — 다만 공식 GitHub 소스 + 별개 블로그 교차검증으로 확신도는 호가잔량 때보다 높음. **배포 전 workflow_dispatch 드라이런으로 실제 값이 나오는지 확인 필요**
+- Supabase 마이그레이션 (수동 SQL 필요):
+  ```sql
+  alter table stock_signal_log add column execution_strength numeric;
+  ```
+- 데이터가 쌓이면 체결강도가 높은(매수우위) 매수 신호가 실제로 적중률이 나은지 `analyze_signal_metadata_correlation.py`로 검증할 것 — 지금은 다른 정보성 지표와 마찬가지로 순수 표시만
+
 ---
 
 ## 향후 계획

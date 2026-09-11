@@ -54,3 +54,37 @@ jobs:
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
         run: .venv/bin/python run_monitor_once.py
+
+      - name: (임시 진단용, Slack 미전송) PER/PBR 실제 알림 종목 0값 원인 확인
+        # 2026-09-11: analyze_signal_metadata_correlation.yml의 DB 조회 진단에서 최근 알림
+        # 20건(051910/006360/041190 등 실제 워치리스트/스캔 종목) 전부 per/pbr이 None으로
+        # 저장돼 있는 걸 발견 — 앞서 005930/000660/035420 3종목으로 직접 검증했을 때는
+        # 정상 값이 나왔던 것과 모순. get_current_price()의 raw output 전체를 덤프해
+        # per/pbr 필드가 실제로 빈 문자열/누락인지, 아니면 파싱 이후 단계에서 사라지는지 확인
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_IS_MOCK: 'true'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          from src.api.kis_api import KISApi
+
+          api = KISApi()
+          for ticker in ["051910", "006360", "041190", "005930"]:
+              try:
+                  data = api._get(
+                      "/uapi/domestic-stock/v1/quotations/inquire-price",
+                      "FHKST01010100",
+                      {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+                      base=api._quote_url,
+                  )
+                  out = data.get("output", {})
+                  print(f"[{ticker}] raw per={out.get('per')!r}, pbr={out.get('pbr')!r}")
+                  parsed = api.get_current_price(ticker)
+                  print(f"  파싱 후: per={parsed.get('per')}, pbr={parsed.get('pbr')}, price={parsed.get('price')}")
+              except Exception as e:
+                  print(f"[{ticker}] 조회 실패: {e}")
+          PY

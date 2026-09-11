@@ -190,6 +190,7 @@ class RealtimeMonitor:
         watch_blocked_by: Optional[list[str]] = None,
         per: Optional[float] = None,
         pbr: Optional[float] = None,
+        bid_ask_ratio: Optional[float] = None,
     ):
         if self._store:
             vkospi_value = self._vkospi["value"] if self._vkospi else None
@@ -209,7 +210,7 @@ class RealtimeMonitor:
                 short_info["ratio"] if short_info else None,
                 disclosure_info is not None,
                 disclosure_info["sentiment"] if disclosure_info else None,
-                per, pbr,
+                per, pbr, bid_ask_ratio,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
@@ -408,6 +409,7 @@ class RealtimeMonitor:
         rec: dict,
         opinion_data: Optional[dict] = None,
         is_after_hours: bool = False,
+        order_book: Optional[dict] = None,
     ) -> str:
         emoji = SIGNAL_EMOJI[signal.signal_type]
         ind   = signal.indicators
@@ -474,6 +476,18 @@ class RealtimeMonitor:
             f"📊 *거래량*\n"
             f"현재: {vol_label}  |  평균 대비: *{vol_ratio:.1f}배*  {vol_flag}"
         )
+
+        # ── 실시간 호가 잔량 (2026-09-11 추가) ── 투자자 수급(EOD 집계, 아래 참고)과 달리
+        # 그 순간의 실시간 매수·매도 압력 — 아직 신호 점수엔 미반영, 정보성 표시 + DB 기록만
+        order_book_block = ""
+        if order_book and order_book.get("total_ask_qty", 0) > 0:
+            ratio = order_book.get("bid_ask_ratio")
+            ratio_str = f"{ratio:.2f}" if ratio is not None else "N/A"
+            order_book_block = (
+                f"🧾 *실시간 호가*\n"
+                f"매수잔량 {order_book['total_bid_qty']:,}주  |  매도잔량 {order_book['total_ask_qty']:,}주"
+                f"  |  매수/매도 비율: *{ratio_str}*"
+            )
 
         # ── 투자자 동향 ──
         fgn  = investor_current.get("foreign", 0)
@@ -619,7 +633,10 @@ class RealtimeMonitor:
 
         # ── 조합 ──
         sep = "─" * 32
-        blocks = [header, sep, vol_block, "", investor_block, "", tech_block]
+        blocks = [header, sep, vol_block]
+        if order_book_block:
+            blocks += ["", order_book_block]
+        blocks += ["", investor_block, "", tech_block]
         if momentum_block:
             blocks += ["", momentum_block]
         blocks += ["", prediction_block, "", reason_block, "", rec_block, sep, f"⏰ _{now_str}_"]
@@ -730,6 +747,14 @@ class RealtimeMonitor:
 
         inv_history_analysis = signal.investor_detail.get("history", {})
 
+        # 실시간 호가 잔량 (2026-09-11 추가) — 쿨다운을 통과해 실제로 알림이 나갈 종목만
+        # 조회(분봉과 동일 원칙, 불필요한 API 호출 최소화)
+        order_book: Optional[dict] = None
+        try:
+            order_book = self._api.get_order_book(ticker, market=market)
+        except Exception as e:
+            logger.warning(f"[{ticker}] 호가 조회 실패: {e}")
+
         msg = self._format_slack_message(
             signal=signal,
             current_info=current_info,
@@ -738,6 +763,7 @@ class RealtimeMonitor:
             rec=rec,
             opinion_data=opinion_data,
             is_after_hours=after_hours,
+            order_book=order_book,
         )
 
         self._notifier.send_sync(msg)
@@ -745,6 +771,7 @@ class RealtimeMonitor:
             ticker, signal.signal_type, signal.score, signal.current_price,
             signal.expected_return_pct, signal.reason, signal.watch_blocked_by,
             current_info.get("per"), current_info.get("pbr"),
+            order_book.get("bid_ask_ratio") if order_book else None,
         )
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "

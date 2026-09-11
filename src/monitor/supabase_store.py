@@ -44,7 +44,7 @@ class SupabaseSignalStore:
     _OPTIONAL_SIGNAL_COLUMNS = (
         "vkospi", "futures_basis", "watch_blocked_by",
         "sp500_change_pct", "usdkrw_change_pct", "short_interest_ratio", "has_disclosure",
-        "disclosure_sentiment", "per", "pbr",
+        "disclosure_sentiment", "per", "pbr", "bid_ask_ratio",
     )
 
     def save_signal(
@@ -65,6 +65,7 @@ class SupabaseSignalStore:
         disclosure_sentiment: Optional[str] = None,
         per: Optional[float] = None,
         pbr: Optional[float] = None,
+        bid_ask_ratio: Optional[float] = None,
     ):
         row = {
             "ticker": ticker,
@@ -107,6 +108,10 @@ class SupabaseSignalStore:
             row["per"] = per
         if pbr is not None:
             row["pbr"] = pbr
+        # 실시간 호가 매수/매도 잔량 비율 (2026-09-11 추가) — EOD 투자자 수급과 달리 그 순간의
+        # 실시간 압력, 아직 점수엔 미반영(위 PER/PBR과 동일 원칙)
+        if bid_ask_ratio is not None:
+            row["bid_ask_ratio"] = bid_ask_ratio
 
         try:
             self._client.table("stock_signal_log").insert(row).execute()
@@ -180,7 +185,8 @@ class SupabaseSignalStore:
     # analyze_signal_metadata_correlation.py(2026-09-01 추가)의 상관관계 분석용으로 추가 조회
     _METADATA_EVAL_COLUMNS = (
         "vkospi, futures_basis, sp500_change_pct, usdkrw_change_pct, "
-        "short_interest_ratio, has_disclosure, disclosure_sentiment, watch_blocked_by"
+        "short_interest_ratio, has_disclosure, disclosure_sentiment, watch_blocked_by, "
+        "per, pbr, bid_ask_ratio"
     )
 
     def get_evaluated_signals(self, since_iso: str) -> list[dict]:

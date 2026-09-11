@@ -54,3 +54,27 @@ jobs:
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
         run: .venv/bin/python run_monitor_once.py
+
+      - name: (임시 진단용, Slack 미전송) 체결강도(tday_rltv) 필드 실측 확인
+        # 2026-09-11: KIS 공식 GitHub 소스코드로 필드명(tday_rltv, TR FHKST01010300)을
+        # 확정했지만 이 세션 샌드박스에선 KIS API가 차단돼 라이브 검증 불가 — 배포 후
+        # workflow_dispatch로 실제 값이 나오는지 직접 확인. PER/PBR·호가잔량과 동일한 패턴
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_IS_MOCK: 'true'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          from src.api.kis_api import KISApi
+
+          api = KISApi()
+          for ticker in ["005930", "000660", "035420"]:
+              try:
+                  strength = api.get_execution_strength(ticker)
+                  print(f"[{ticker}] 체결강도(tday_rltv) = {strength}")
+              except Exception as e:
+                  print(f"[{ticker}] 조회 실패: {e}")
+          PY

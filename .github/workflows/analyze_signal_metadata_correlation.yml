@@ -693,3 +693,39 @@ jobs:
           report("외국인 순매수/순매도별 익일 수익률", foreign_buckets)
           report("기관 순매수/순매도별 익일 수익률", institution_buckets)
           PY
+
+      - name: (진단용, Slack 미전송) PER/PBR 필드 실측 확인 — 최근 신호 저장값 조회
+        # 2026-09-11: PER/PBR 필드가 KIS 응답(FHKST01010100)에 실제로 있는지, save_signal()이
+        # 마이그레이션 후 정상 저장하는지를 콘솔에서 직접 확인 — Slack 메시지 본문은 GitHub
+        # Actions 로그에 안 찍히고, 이 세션에 연결된 Slack이 실제 봇이 알림을 보내는 채널과
+        # 다른 워크스페이스로 보여 Slack에서 직접 확인이 어려웠음. 최근 저장된 신호 중
+        # per/pbr이 실제로 값이 들어있는지(그리고 코스피 평균 근처의 그럴듯한 범위인지)
+        # DB에서 바로 확인
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from supabase import create_client
+
+          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          result = (
+              client.table("stock_signal_log")
+              .select("ticker,signal_type,alerted_at,per,pbr")
+              .order("alerted_at", desc=True)
+              .limit(20)
+              .execute()
+          )
+          rows = result.data or []
+          print(f"[진단] 최근 신호 {len(rows)}건 — per/pbr 저장값 확인")
+          have_value = 0
+          for r in rows:
+              per, pbr = r.get("per"), r.get("pbr")
+              if per is not None or pbr is not None:
+                  have_value += 1
+              print(f"  [{r['ticker']}] {r['signal_type']} @ {r['alerted_at']}: per={per}, pbr={pbr}")
+          print(f"[결론] {len(rows)}건 중 per/pbr 값이 하나라도 있는 건 {have_value}건")
+          if have_value == 0:
+              print("  [경고] 전부 비어있음 — 필드명(per/pbr)이 실제 KIS 응답과 다르거나 마이그레이션 미반영 의심")
+          PY

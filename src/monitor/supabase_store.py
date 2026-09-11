@@ -44,7 +44,7 @@ class SupabaseSignalStore:
     _OPTIONAL_SIGNAL_COLUMNS = (
         "vkospi", "futures_basis", "watch_blocked_by",
         "sp500_change_pct", "usdkrw_change_pct", "short_interest_ratio", "has_disclosure",
-        "disclosure_sentiment",
+        "disclosure_sentiment", "per", "pbr",
     )
 
     def save_signal(
@@ -63,6 +63,8 @@ class SupabaseSignalStore:
         short_interest_ratio: Optional[float] = None,
         has_disclosure: Optional[bool] = None,
         disclosure_sentiment: Optional[str] = None,
+        per: Optional[float] = None,
+        pbr: Optional[float] = None,
     ):
         row = {
             "ticker": ticker,
@@ -99,6 +101,12 @@ class SupabaseSignalStore:
         # 분류 불가하면 "중립"이 저장되고, 공시 자체가 없으면 None으로 남음)
         if disclosure_sentiment is not None:
             row["disclosure_sentiment"] = disclosure_sentiment
+        # PER/PBR (2026-09-11 추가) — 기술적 지표·수급과 다른 축(밸류에이션)의 정보성 기록,
+        # 위 지표들과 동일 원칙(아직 점수엔 미반영, 데이터 쌓이면 반영 여부 판단)
+        if per is not None:
+            row["per"] = per
+        if pbr is not None:
+            row["pbr"] = pbr
 
         try:
             self._client.table("stock_signal_log").insert(row).execute()

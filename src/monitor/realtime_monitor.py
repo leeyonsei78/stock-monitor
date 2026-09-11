@@ -188,6 +188,8 @@ class RealtimeMonitor:
         expected_return_pct: Optional[float] = None,
         reason: Optional[str] = None,
         watch_blocked_by: Optional[list[str]] = None,
+        per: Optional[float] = None,
+        pbr: Optional[float] = None,
     ):
         if self._store:
             vkospi_value = self._vkospi["value"] if self._vkospi else None
@@ -207,6 +209,7 @@ class RealtimeMonitor:
                 short_info["ratio"] if short_info else None,
                 disclosure_info is not None,
                 disclosure_info["sentiment"] if disclosure_info else None,
+                per, pbr,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
@@ -451,6 +454,16 @@ class RealtimeMonitor:
             if usdkrw:
                 parts.append(f"USD/KRW {usdkrw['change_pct']:+.1f}%")
             header += f"\n🌐 {' · '.join(parts)} (전일 마감 기준)"
+        # PER/PBR (2026-09-11 추가) — 기술적 지표·수급과 다른 축(밸류에이션)의 정보성 참고자료,
+        # 아직 신호 점수엔 미반영. 값 없음(적자 등으로 PER 산출 불가)이면 그 항목만 생략
+        per, pbr = current_info.get("per"), current_info.get("pbr")
+        if per or pbr:
+            val_parts = []
+            if per:
+                val_parts.append(f"PER {per:.1f}배")
+            if pbr:
+                val_parts.append(f"PBR {pbr:.1f}배")
+            header += f"\n💰 {' · '.join(val_parts)}"
 
         # ── 거래량 ──
         vol        = current_info.get("volume", 0)
@@ -731,6 +744,7 @@ class RealtimeMonitor:
         self._mark_alerted(
             ticker, signal.signal_type, signal.score, signal.current_price,
             signal.expected_return_pct, signal.reason, signal.watch_blocked_by,
+            current_info.get("per"), current_info.get("pbr"),
         )
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "

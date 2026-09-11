@@ -233,6 +233,15 @@ class KISApi:
             "change_pct": _safe_float(out.get("prdy_ctrt")),
             "volume": _safe_int(out.get("acml_vol")),
             "trade_amount": _safe_int(out.get("acml_tr_pbmn")),
+            # PER/PBR (2026-09-11 추가) — 이 TR(FHKST01010100) 응답에 이미 포함돼 있다고
+            # 알려진 필드를 재사용(새 API 호출 없음), 기술적 지표·수급과 완전히 다른 축
+            # (저평가/고평가)의 정보성 참고자료. ⚠️ 이 세션 샌드박스에서 KIS API가 차단돼
+            # 있어 실제 필드명·값을 라이브로 검증하지 못함(CLAUDE.md "개발 환경 제약" 참고) —
+            # 배포 전 반드시 workflow_dispatch 드라이런으로 실제 값이 그럴듯한 범위(예:
+            # 코스피 평균 PER 10~20배 수준)인지 확인할 것. 값이 없거나 0/음수(적자 등으로
+            # PER 산출 불가)면 None으로 남겨 표시만 생략되게 함(신호 판정에는 미사용)
+            "per": _safe_float(out.get("per")) or None,
+            "pbr": _safe_float(out.get("pbr")) or None,
         }
 
     def get_daily_ohlcv(self, ticker: str, period: int = 120) -> list[dict]:

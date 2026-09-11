@@ -971,12 +971,13 @@ VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여�
 - VKOSPI/선물베이시스와 동일 원칙: **아직 신호 점수엔 미반영**, Slack 헤더에 `💰 PER 12.3배 · PBR 1.6배` 형태로 정보성 표시 + `stock_signal_log.per`/`pbr` 컬럼 기록만
 - `_mark_alerted()`/`save_signal()`에 기존 vkospi/futures_basis 등과 동일한 폴백 패턴 적용(마이그레이션 전이면 이 두 컬럼만 빼고 재시도) — `_OPTIONAL_SIGNAL_COLUMNS`에 추가
 - 합성 데이터로 헤더 렌더링 4가지 케이스(둘 다 있음/PBR만/둘 다 없음/PER 음수) 확인
-- **⚠️ 개발 환경 제약 — 이 세션 샌드박스는 KIS API가 차단돼 있어 `per`/`pbr` 필드명·실제 값을 라이브로 검증하지 못함**(다른 신규 지표 추가 때와 동일한 제약, 위 "매수/매도/관심 판단 보강용 외부 정보 추가" 섹션 참고). 필드명이 알려진 이름과 다르거나 이 TR이 실제로 이 값을 안 준다면 `per`/`pbr`이 계속 None으로만 남고 조용히 아무 표시도 안 됨(크래시는 안 남) — **배포 전 반드시 `stock_monitor.yml` workflow_dispatch 드라이런으로 실제 PER/PBR 값이 코스피 평균(대략 10~20배) 근처의 그럴듯한 범위로 나오는지 확인할 것**, 값이 하나도 안 뜨면 필드명 자체를 재확인 필요
-- Supabase 마이그레이션 (수동 SQL 필요):
+- **⚠️ 개발 환경 제약 — 이 세션 샌드박스는 KIS API가 차단돼 있어 개발 중엔 `per`/`pbr` 필드명·실제 값을 라이브로 검증 못 함**(다른 신규 지표 추가 때와 동일한 제약, 위 "매수/매도/관심 판단 보강용 외부 정보 추가" 섹션 참고) — **배포 후 실측으로 해소됨(아래 참고)**
+- Supabase 마이그레이션 — **사용자가 실행 완료**:
   ```sql
   alter table stock_signal_log add column per numeric;
   alter table stock_signal_log add column pbr numeric;
   ```
+- **배포 후 실측 검증 완료 (2026-09-11)**: 쿨다운 때문에 알림 파이프라인(Slack 표시/DB 저장)을 즉시 재확인하기 어려워, `KISApi.get_current_price()`를 워치리스트 3종목으로 직접 호출하는 임시 진단 스텝을 `stock_monitor.yml`에 추가해 실행 — **필드명·값 모두 정상 확인**: `005930(삼성전자) per=39.53, pbr=4.05` / `000660(SK하이닉스) per=30.74, pbr=10.55` / `035420(NAVER) per=16.69, pbr=1.12`. 전부 None 없이 값이 들어왔고 종목별 특성에 맞는 그럴듯한 범위(반도체 고밸류·NAVER 상대적 저평가)라 필드명이 맞다는 것 확정. 검증 후 임시 스텝은 제거. 실제 Slack 알림/DB 저장 경로(vkospi 등과 동일한 코드 패턴이라 문제 없을 것으로 판단)는 다음 자연 발생 알림(쿨다운 4시간 이후)에서 `analyze_signal_metadata_correlation.yml`의 "PER/PBR 필드 실측 확인" 진단 스텝으로 재확인 가능
 - 데이터가 쌓이면(예: 저PER/저PBR 매수 신호가 고PER/고PBR 매수 신호보다 적중률이 나은지) `analyze_signal_metadata_correlation.py`에 상관관계 분석 대상으로 추가해 검증할 것 — 지금은 다른 정보성 지표와 마찬가지로 순수 표시만
 
 ### 검토만 진행한 대안: 실시간 호가잔량/체결강도 (미구현, 2026-09-11)

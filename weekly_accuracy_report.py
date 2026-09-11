@@ -87,6 +87,25 @@ def _group_stats(rows: list[dict]) -> list[str]:
         w_avg = sum(r["return_1d_pct"] for r in watch_rows) / len(watch_rows)
         parts.append(f"관심(WATCH) {len(watch_rows)}건 중 상승 {w_hits}건(평균 {w_avg:+.1f}%)")
 
+    # 3일 지평 적중률 병기 (2026-09-11 추가) — ATR×2.5 목표가는 통상 하루 안에 안 닿는 폭이라
+    # "신호 방향은 맞는데 1일 평가가 너무 이르다"는 가설을 진단(analyze_signal_metadata_correlation.yml)으로
+    # 확인한 결과 매수가 1일 29%→3일 44%로 뚜렷이 개선되는 걸 발견 — 1일 수치만 보면 오판할 수
+    # 있어 3일차 평가가 끝난 신호만 대상으로 1일/3일을 나란히 표시(1일 지표는 그대로 유지, 병기만 함)
+    def _dir_hit(signal_type: str, ret: float) -> bool:
+        return ret < 0 if signal_type in SELL_TYPES else ret > 0  # 매수/관심은 상승, 매도는 하락
+
+    d3_rows = [r for r in rows if r.get("return_3d_pct") is not None]
+    d3_line_parts = []
+    for name, types in [("매수", BUY_TYPES), ("매도", SELL_TYPES), ("관심", {WATCH_TYPE})]:
+        group = [r for r in d3_rows if r["signal_type"] in types]
+        if len(group) < 5:
+            continue
+        hits_1d = sum(1 for r in group if _dir_hit(r["signal_type"], r["return_1d_pct"]))
+        hits_3d = sum(1 for r in group if _dir_hit(r["signal_type"], r["return_3d_pct"]))
+        d3_line_parts.append(f"{name} 1일{hits_1d}/{len(group)}→3일{hits_3d}/{len(group)}")
+    if d3_line_parts:
+        parts.append(f"1일→3일 지평 비교({', '.join(d3_line_parts)})")
+
     # 매수/매도/관심 타입별로 쪼개서 표시 (2026-09-04 수정) — 이전엔 세 타입을 그대로 섞어
     # 평균 냈는데, 매수·관심은 항상 양수(score≥0.30)·매도는 대부분 음수로 설계상 반대 부호라
     # 섞으면 "그 주 신호 품질"이 아니라 "그 주 매수/매도/관심 비율"을 반영하는 숫자가 됨 —

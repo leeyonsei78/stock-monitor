@@ -498,3 +498,60 @@ jobs:
           bucket_print("09~14시대(당일 투자자 데이터 미집계 추정 구간)", [r for r in buy_rows if r["_alerted_kst"].hour < 15])
           bucket_print("15시 이후(당일 투자자 데이터 집계 추정 구간)", [r for r in buy_rows if r["_alerted_kst"].hour >= 15])
           PY
+
+      - name: (진단용, Slack 미전송) watch_rsi_ceiling 적용 전후 관심(WATCH) 적중률 비교
+        # 2026-09-04에 RSI>=70이면 관심(WATCH)을 조용히 보유(HOLD)로 전환하도록 배포한 게
+        # 실제로 관심 적중률을 개선했는지 확인 — alerted_at을 적용일(2026-09-04) 기준으로
+        # 나눠 비교. 적용 후 표본에 RSI>=70 단독 게이트 케이스가 실제로 하나도 없는지도
+        # 회귀 검증(watch_gates 문자열이 "rsi" 단독이면서 reason의 RSI 값이 70 이상인 경우가
+        # 있으면 버그). 새 API 호출 없음, Slack 미전송
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          import re
+          from datetime import datetime, timedelta, timezone, date
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+
+          KST = ZoneInfo("Asia/Seoul")
+          WATCH_RSI_CEILING_DATE = date(2026, 9, 4)
+
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          rows = store.get_evaluated_signals(since_iso)
+
+          watch_rows = [r for r in rows if r["signal_type"] == SignalType.WATCH.value]
+          for r in watch_rows:
+              r["_alerted_kst"] = datetime.fromisoformat(r["alerted_at"].replace("Z", "+00:00")).astimezone(KST)
+
+          before = [r for r in watch_rows if r["_alerted_kst"].date() < WATCH_RSI_CEILING_DATE]
+          after = [r for r in watch_rows if r["_alerted_kst"].date() >= WATCH_RSI_CEILING_DATE]
+
+          def stats(label, group):
+              if len(group) < 5:
+                  print(f"  {label}: {len(group)}건 (5건 미만, 참고용)")
+                  return
+              hits = sum(1 for r in group if r["return_1d_pct"] > 0)
+              avg = sum(r["return_1d_pct"] for r in group) / len(group)
+              print(f"  {label}: {len(group)}건, 적중 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
+
+          print(f"[진단] 관심(WATCH) {len(watch_rows)}건 — watch_rsi_ceiling 적용({WATCH_RSI_CEILING_DATE}) 전후 비교")
+          stats(f"적용 전(~{WATCH_RSI_CEILING_DATE})", before)
+          stats(f"적용 후({WATCH_RSI_CEILING_DATE}~)", after)
+
+          pattern = re.compile(r"RSI 과열\(([\d.]+)>")
+          regressions = []
+          for r in after:
+              if r.get("watch_blocked_by") == "rsi":
+                  m = pattern.search(r.get("reason") or "")
+                  if m and float(m.group(1)) >= 70:
+                      regressions.append((r["ticker"], m.group(1), r["alerted_at"]))
+          if regressions:
+              print(f"  [경고] 적용 후에도 RSI>=70 단독 관심 발생 {len(regressions)}건(회귀 의심): {regressions[:5]}")
+          else:
+              print("  [확인] 적용 후 RSI>=70 단독 관심 발생 0건 — 억제 로직 정상 작동 중")
+          PY

@@ -54,33 +54,3 @@ jobs:
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
         run: .venv/bin/python run_monitor_once.py
-
-      - name: (임시 진단용, Slack 미전송) execution_strength 스키마 캐시 확인 — insert 테스트
-        # 2026-09-11: per/pbr 마이그레이션 직후 PostgREST 스키마 캐시 지연(PGRST204)으로
-        # 한동안 insert가 실패했던 전례가 있음(위 "PER/PBR 밸류에이션 지표 추가" 섹션 참고) —
-        # execution_strength 마이그레이션 완료 확인 후 동일한 insert 테스트로 캐시 상태 확인
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          .venv/bin/python - <<'PY'
-          import os
-          from supabase import create_client
-
-          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-          test_row = {
-              "ticker": "TEST00",
-              "signal_type": "매도",
-              "score": 0.0,
-              "current_price": 1,
-              "execution_strength": 88.8,
-          }
-          try:
-              result = client.table("stock_signal_log").insert(test_row).execute()
-              row_id = result.data[0]["id"]
-              print(f"[성공] execution_strength 포함 insert 성공 (id={row_id}) — 스키마 캐시 정상")
-              client.table("stock_signal_log").delete().eq("id", row_id).execute()
-              print("[정리] 테스트 행 삭제 완료")
-          except Exception as e:
-              print(f"[실패] insert 실패 — 스키마 캐시 아직 미갱신 또는 마이그레이션 미반영: {e}")
-          PY

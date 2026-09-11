@@ -1015,11 +1015,12 @@ VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여�
 - `save_signal()`/`_mark_alerted()`에 기존 per/pbr/bid_ask_ratio와 동일한 폴백 패턴 적용 — `_OPTIONAL_SIGNAL_COLUMNS`/`_METADATA_EVAL_COLUMNS`에 추가(이번엔 처음부터 양쪽에 같이 추가 — PER/PBR 때 `_METADATA_EVAL_COLUMNS` 누락했던 실수 재발 방지)
 - 합성 데이터로 헤더 블록 렌더링 5가지 케이스(호가+체결강도 모두/체결강도만/호가만/둘 다 없음/호가 전량 0+체결강도 100균형) + `save_signal()` 위치 인자 순서(mock Supabase client로 `execution_strength`가 정확한 컬럼에 들어가는지) 확인
 - **⚠️ 개발 환경 제약 — 이 세션 샌드박스는 KIS API가 차단돼 있어 개발 중엔 `tday_rltv` 필드명을 라이브로 검증 못함**(다른 신규 지표와 동일한 제약) — 다만 공식 GitHub 소스 + 별개 블로그 교차검증으로 확신도는 호가잔량 때보다 높음. **배포 후 실측으로 해소됨(아래 참고)**
-- **배포 후 실측 검증 완료 (2026-09-11)**: `KISApi.get_execution_strength()`를 워치리스트 3종목으로 직접 호출하는 임시 진단 스텝을 `stock_monitor.yml`에 추가해 실행(장후 시간외, 09:26 KST) — **필드명·값 모두 정상 확인**: `005930(삼성전자) = 99.13` / `000660(SK하이닉스) = 100.32` / `035420(NAVER) = 60.3`. 전부 None 없이 값이 들어왔고 WARNING 로그(필드명 변경 감지용)도 없어 필드명이 맞다는 것 확정 — 100 근방(삼성전자·SK하이닉스)과 뚜렷한 매도우위(NAVER 60.3)가 함께 나와 종목별로 실제 다른 값이 찍히는 것도 확인(고정값 버그 아님). 검증 후 임시 스텝 제거. Slack 표시/DB 저장 경로는 per/pbr·bid_ask_ratio와 동일한 코드 패턴이라 문제 없을 것으로 판단하나, per/pbr 사례에서 마이그레이션 직후 PostgREST 스키마 캐시 지연으로 한동안 저장이 안 됐던 전례가 있으므로(위 "PER/PBR 밸류에이션 지표 추가" 섹션 2026-09-11 항목 참고) 마이그레이션 실행 후 곧바로 검증하지 말고 다음 자연 발생 알림에서 `analyze_signal_metadata_correlation.yml` 진단으로 재확인할 것
-- Supabase 마이그레이션 (수동 SQL 필요):
+- **배포 후 실측 검증 완료 (2026-09-11)**: `KISApi.get_execution_strength()`를 워치리스트 3종목으로 직접 호출하는 임시 진단 스텝을 `stock_monitor.yml`에 추가해 실행(장후 시간외, 09:26 KST) — **필드명·값 모두 정상 확인**: `005930(삼성전자) = 99.13` / `000660(SK하이닉스) = 100.32` / `035420(NAVER) = 60.3`. 전부 None 없이 값이 들어왔고 WARNING 로그(필드명 변경 감지용)도 없어 필드명이 맞다는 것 확정 — 100 근방(삼성전자·SK하이닉스)과 뚜렷한 매도우위(NAVER 60.3)가 함께 나와 종목별로 실제 다른 값이 찍히는 것도 확인(고정값 버그 아님). 검증 후 임시 스텝 제거
+- Supabase 마이그레이션 — **사용자가 실행 완료 (2026-09-11)**:
   ```sql
   alter table stock_signal_log add column execution_strength numeric;
   ```
+- **마이그레이션 후 스키마 캐시 확인 완료 (2026-09-11)**: per/pbr 사례에서 마이그레이션 직후 PostgREST 스키마 캐시 지연(PGRST204)으로 한동안 insert가 실패했던 전례가 있어(위 "PER/PBR 밸류에이션 지표 추가" 섹션 참고), 같은 재발을 막기 위해 마이그레이션 완료 확인 직후 `stock_monitor.yml`에 임시 insert 테스트 스텝을 추가해 실행 — `execution_strength` 포함 insert 즉시 성공(id=626, 테스트 행은 바로 삭제해 통계 오염 없음), 이번엔 캐시 지연 없이 정상. 검증 후 임시 스텝 제거. 이제 다음 자연 발생 알림부터 정상 저장될 것으로 예상 — `analyze_signal_metadata_correlation.yml`의 DB 확인 진단(per/pbr/bid_ask_ratio/execution_strength 모두 포함하도록 이미 확장돼 있음)으로 실제 알림 저장까지 재확인 가능
 - 데이터가 쌓이면 체결강도가 높은(매수우위) 매수 신호가 실제로 적중률이 나은지 `analyze_signal_metadata_correlation.py`로 검증할 것 — 지금은 다른 정보성 지표와 마찬가지로 순수 표시만
 
 ---

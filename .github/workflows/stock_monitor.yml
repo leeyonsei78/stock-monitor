@@ -54,23 +54,3 @@ jobs:
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
         run: .venv/bin/python run_monitor_once.py
-
-      - name: (임시 진단용, Slack 미전송) 실시간 호가 필드 실측 확인
-        # 2026-09-11: get_order_book()의 total_askp_rsqn/total_bidp_rsqn 필드가 실제 KIS
-        # 응답과 맞는지 확인 — 확인 후 이 스텝은 제거 예정
-        env:
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
-          KIS_IS_MOCK: 'true'
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          .venv/bin/python - <<'PY'
-          from src.api.kis_api import KISApi
-
-          api = KISApi()
-          for ticker in ["005930", "000660", "035420"]:
-              ob = api.get_order_book(ticker)
-              print(f"[{ticker}] {ob}")
-          PY

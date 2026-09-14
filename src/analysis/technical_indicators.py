@@ -205,6 +205,91 @@ class TechnicalIndicators:
             "signal": signal,
         }
 
+    # ── 볼린저 밴드폭 스퀴즈 (2026-09-14 실험적 추가, 신호 점수 미반영) ────────
+    # 기존 볼린저(%b)는 "현재가가 밴드 어디에 있나"(위치)만 보는데, 밴드 폭 자체는
+    # 그와 별개 축인 변동성 국면(수축/확대)을 나타냄 — 좁을수록(스퀴즈) 곧 큰 움직임이
+    # 올 가능성을 시사한다는 통념(방향은 안 알려줌). 사용자 요청으로 "볼린저 2개 활용"
+    # 아이디어를 검토하다, 같은 기간을 다른 표준편차로 겹치는 방식은 이동평균선 정배열
+    # 로직과 개념이 겹쳐 새 정보량이 적을 것으로 판단해 기각 — 대신 밴드 폭이라는
+    # 진짜 다른 축을 후보로 채택함(위 신호 점수 체계 문서 참고).
+    def calc_bollinger_width(self, df: pd.DataFrame) -> pd.Series:
+        cfg = self._cfg["indicators"]["bollinger_bands"]
+        period, std_dev = cfg["period"], cfg["std_dev"]
+        mid = df["close"].rolling(period).mean()
+        std = df["close"].rolling(period).std()
+        return (2 * std_dev * std) / mid.replace(0, np.nan)
+
+    def bollinger_squeeze_signal(self, width: pd.Series, lookback: int = 120) -> float:
+        """밴드 폭이 최근 lookback 거래일 대비 얼마나 좁은지 0(안 좁음)~1(극단적 스퀴즈)
+        로 반환. 방향성이 없는 신호라 향후 수익률 부호가 아니라 절대값(변동폭 크기)과의
+        상관관계로 검증해야 함 — backtest_technical_score.py에서 별도 처리."""
+        window = width.dropna()
+        if len(window) < 20:
+            return 0.0
+        window = window.iloc[-lookback:]
+        current = window.iloc[-1]
+        percentile = (window < current).mean()  # 0=가장 좁음(스퀴즈), 1=가장 넓음
+        return round(1.0 - percentile, 3)
+
+    # ── ADX 추세강도 필터 (2026-09-14 실험적 추가, 신호 점수 미반영) ───────────
+    # MA 정배열/MACD 골든크로스 같은 추세추종 신호는 실제로 추세장에서만 신뢰도가
+    # 높을 것이라는 통념 — ADX(방향 없이 "추세가 있는지"만 측정)로 기존 MA 신호를
+    # 가중해, "추세강도로 거른 버전"이 원본 MA 신호보다 향후 수익률과 상관관계가
+    # 나은지 검증하는 것이 목적(다른 오실레이터 추가와 달리 필터 역할이라 RSI 등과
+    # 안 겹침).
+    def calc_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        high, low, close = df["high"], df["low"], df["close"]
+        up_move = high.diff()
+        down_move = -low.diff()
+        plus_dm = ((up_move > down_move) & (up_move > 0)) * up_move
+        minus_dm = ((down_move > up_move) & (down_move > 0)) * down_move
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+        plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.inf)
+        minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.inf)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.inf)
+        return dx.ewm(alpha=1 / period, adjust=False).mean()
+
+    def trend_strength_filtered_signal(self, ma_sig: float, adx: float, adx_strong: float = 25.0) -> float:
+        """ADX가 낮으면(횡보장) MA 신호를 깎고, 높으면(추세장) 그대로 반영."""
+        if pd.isna(adx):
+            return 0.0
+        weight = min(1.0, adx / adx_strong)
+        return round(ma_sig * weight, 3)
+
+    # ── 자금흐름 CMF/OBV (2026-09-14 실험적 추가, 신호 점수 미반영) ────────────
+    # 기존 거래량 지표(calc_volume_analysis)는 "평균 대비 배율"이라는 크기만 봄 —
+    # CMF/OBV는 누적된 방향성(자금이 꾸준히 들어오는지 빠지는지)을 보는 다른 축.
+    def calc_cmf(self, df: pd.DataFrame, period: int = 20) -> pd.Series:
+        high, low, close, volume = df["high"], df["low"], df["close"], df["volume"]
+        hl_range = (high - low).replace(0, np.nan)
+        mfm = ((close - low) - (high - close)) / hl_range
+        mfv = mfm.fillna(0.0) * volume
+        return mfv.rolling(period).sum() / volume.rolling(period).sum().replace(0, np.inf)
+
+    def cmf_signal(self, cmf: pd.Series) -> float:
+        val = cmf.iloc[-1] if len(cmf) else np.nan
+        if pd.isna(val):
+            return 0.0
+        # CMF는 통상 ±0.3 내외로 움직여 체감 크기에 맞춰 3배 스케일 후 클리핑
+        return round(max(-1.0, min(1.0, val * 3)), 3)
+
+    def obv_signal(self, df: pd.DataFrame, period: int = 10) -> float:
+        """누적 거래량 흐름(OBV) 방향 — 가격 방향과 일치하면 추세 확인, 반대면
+        다이버전스(향후 가격이 OBV 방향을 따라갈 것이라는 통념)."""
+        if len(df) < period + 1:
+            return 0.0
+        direction = np.sign(df["close"].diff().fillna(0.0))
+        obv = (direction * df["volume"]).cumsum()
+        obv_slope = obv.iloc[-1] - obv.iloc[-period]
+        if obv_slope == 0:
+            return 0.0
+        return round(0.6 * float(np.sign(obv_slope)), 3)
+
     # ── ATR (변동성, 종목별 동적 손절/목표가 산출용) ──────────────
     def calc_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         prev_close = df["close"].shift(1)
@@ -362,6 +447,17 @@ class TechnicalIndicators:
             index_5d_return = (idx_p1 - idx_p0) / idx_p0 if idx_p0 > 0 else 0.0
             rs_sig = self.relative_strength_signal(stock_5d_return, index_5d_return)
 
+        # ── 실험적 지표 (2026-09-14 추가) — 아직 신호 점수(tech_score)엔 미반영,
+        # signals/indicators에만 기록해 backtest_technical_score.py로 예측력 검증 중
+        bb_width_series = self.calc_bollinger_width(df)
+        bb_squeeze_sig = self.bollinger_squeeze_signal(bb_width_series)
+        adx_series = self.calc_adx(df)
+        adx_val = adx_series.iloc[-1]
+        ma_adx_filtered_sig = self.trend_strength_filtered_signal(ma_sig, adx_val)
+        cmf_series = self.calc_cmf(df)
+        cmf_sig = self.cmf_signal(cmf_series)
+        obv_sig = self.obv_signal(df)
+
         weights = self._cfg["signal_weights"]
         tech_score = (
             rsi_sig * weights["rsi"]
@@ -386,6 +482,11 @@ class TechnicalIndicators:
                 "moving_average": round(ma_sig, 3),
                 "volume": round(vol_sig, 3),
                 "relative_strength": round(rs_sig, 3),
+                # 실험적 지표 (2026-09-14 추가) — tech_score 가중치엔 미포함, 검증용
+                "bb_squeeze": bb_squeeze_sig,
+                "ma_adx_filtered": ma_adx_filtered_sig,
+                "cmf": cmf_sig,
+                "obv": obv_sig,
             },
             "indicators": {
                 "rsi": round(rsi_val, 2),
@@ -404,5 +505,7 @@ class TechnicalIndicators:
                 "atr_pct": round(atr_pct, 3),
                 "stock_5d_return": round(stock_5d_return, 4),
                 "index_5d_return": round(index_5d_return, 4) if index_5d_return is not None else None,
+                "adx": round(adx_val, 2) if pd.notna(adx_val) else None,
+                "bb_width_pct": round(bb_width_series.iloc[-1] * 100, 3) if pd.notna(bb_width_series.iloc[-1]) else None,
             },
         }

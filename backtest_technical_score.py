@@ -10,6 +10,12 @@ KIS 투자자 수급 API(inquire-investor)는 항상 "최근 30거래일"만 반
 다양한 섹터의 유동성 높은 종목 ~35개를 고정 유니버스로 사용
 (KIS 거래량 상위 API는 "오늘" 기준 순위만 제공해 과거 특정일의 거래량
 상위 목록을 재현할 수 없기 때문 — 대신 섹터 대표 종목으로 근사).
+
+2026-09-14 추가: "적중률을 높일 다른 지표가 있는지" 사용자 요청으로 4개 실험적
+지표(볼린저 밴드폭 스퀴즈/ADX 추세강도 필터/CMF/OBV)를 get_technical_score()의
+signals에 가중치 0(신호 점수 미반영)으로 추가 — 이 백테스트가 sig_* 컬럼을
+전부 자동으로 상관분석하므로 새 API 호출·라이브 검증 없이 기존 인프라로 바로
+예측력 검증 가능. bb_squeeze는 방향성 없는 신호라 아래에서 |수익률|과 별도 비교.
 """
 import os
 import sys
@@ -142,13 +148,25 @@ def main():
     )
 
     # ── 개별 지표별 예측력 분해 ──────────────────────────────────
+    # 2026-09-14: bb_squeeze는 방향성 없는 신호(변동성 수축 정도)라 부호 있는 수익률과의
+    # 상관계수는 애초에 near-zero가 정상 — |향후 수익률|(변동폭 크기)과 별도 비교
+    NON_DIRECTIONAL_SIGNALS = {"bb_squeeze"}
     sig_cols = [c for c in df.columns if c.startswith("sig_")]
     lines.append("\n*개별 지표별 상관계수(3일)/스프레드* — 참고용, 가중치는 사람이 검토 후 수동 반영")
     for col in sig_cols:
         name_kr = col.replace("sig_", "")
-        corr3 = df[col].corr(df["fwd_3d"])
         top_g = df[df[col] >= df[col].quantile(0.8)]
         bot_g = df[df[col] <= df[col].quantile(0.2)]
+        if name_kr in NON_DIRECTIONAL_SIGNALS:
+            abs_fwd = df["fwd_3d"].abs()
+            corr_abs = df[col].corr(abs_fwd)
+            spread_abs = top_g["fwd_3d"].abs().mean() - bot_g["fwd_3d"].abs().mean()
+            lines.append(
+                f"  {name_kr}(방향성 없음, |수익률|과 비교): corr {corr_abs:+.4f}, "
+                f"상위20%(스퀴즈 강함) vs 하위20% |수익률| 스프레드 {spread_abs:+.3f}%p"
+            )
+            continue
+        corr3 = df[col].corr(df["fwd_3d"])
         spread3 = top_g["fwd_3d"].mean() - bot_g["fwd_3d"].mean()
         lines.append(f"  {name_kr}: corr {corr3:+.4f}, 상하위20% 스프레드 {spread3:+.3f}%p")
 

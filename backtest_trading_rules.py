@@ -238,6 +238,13 @@ def main():
             kr = kospi_return_over(date_i, exit_date)
             excess_return_pct = (outcome["return_pct"] - kr) if kr is not None else None
 
+            # 2026-09-14: 손절/목표/타임아웃 시뮬레이션 없이 단순 익일·3일 가격 변화만 본
+            # fwd_1d/fwd_3d — 2026-09-02 운영 로그 기반 진단(watch_blocked_by, return_1d_pct
+            # 단순 스냅샷 방식)과 "같은 잣대"로 비교하기 위해 추가. i+MAX_HOLD_DAYS(=10)<len(records)가
+            # 이미 루프 진입 조건이라 i+1/i+3은 항상 존재
+            fwd_1d_pct = (records[i + 1]["close"] - entry_price) / entry_price * 100
+            fwd_3d_pct = (records[i + 3]["close"] - entry_price) / entry_price * 100
+
             rows.append({
                 "ticker": code, "name": name, "date": date_i,
                 "score": round(approx_score, 4), "rsi": rsi, "vol_ratio": vol_ratio,
@@ -245,6 +252,7 @@ def main():
                 "group": group, "stop_pct": stop_pct, "target_pct": target_pct,
                 "kospi_return_pct": round(kr, 2) if kr is not None else None,
                 "excess_return_pct": round(excess_return_pct, 2) if excess_return_pct is not None else None,
+                "fwd_1d_pct": round(fwd_1d_pct, 2), "fwd_3d_pct": round(fwd_3d_pct, 2),
                 **outcome,
             })
             added += 1
@@ -334,6 +342,29 @@ def main():
 
     lines.append("\n*참고: 게이트 무시하고 매수선만 넘으면 전부 샀을 경우*")
     lines.append(f"  전체(게이트 무관): {summarize(df)}")
+
+    # 2026-09-14: 위 게이트별 비교(손절/목표/타임아웃 워크포워드 시뮬레이션)가 2026-09-02
+    # 운영 로그 기반 진단(watch_blocked_by, return_1d_pct 단순 스냅샷)과 정반대 결론을 내서
+    # ("RSI 게이트가 도움됨" vs "RSI 게이트가 오히려 해로움") 방법론 차이를 좁히기 위해
+    # 같은 잣대(손절/목표 없이 단순 1일/3일 가격 변화, hit=return>0)로도 같은 그룹을 재비교
+    lines.append(
+        "\n*게이트별 1일/3일 단순 수익률 비교* (2026-09-02 운영 로그 진단과 같은 잣대 — "
+        "손절/목표/타임아웃 없이 단순 가격 변화만, 위 결과와의 모순 좁히기용)"
+    )
+    for group, label in groups.items():
+        sub = subs[group]
+        n = len(sub)
+        if n == 0:
+            lines.append(f"  {label}: 표본 없음")
+            continue
+        hit_1d = (sub["fwd_1d_pct"] > 0).mean() * 100
+        avg_1d = sub["fwd_1d_pct"].mean()
+        hit_3d = (sub["fwd_3d_pct"] > 0).mean() * 100
+        avg_3d = sub["fwd_3d_pct"].mean()
+        lines.append(
+            f"  {label}: {n}건 | 1일 상승 {hit_1d:.1f}%(평균 {avg_1d:+.2f}%) | "
+            f"3일 상승 {hit_3d:.1f}%(평균 {avg_3d:+.2f}%)"
+        )
 
     lines.append("\n*통계적 유의성 (초과수익률 기준 t-검정)*")
     lines.append(f"  게이트 통과 평균이 0과 다른가: {sig_test(subs['buy_gates_pass']['excess_return_pct'])}")

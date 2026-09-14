@@ -94,20 +94,11 @@ def load_configs():
     return strategy, cfg
 
 
-def calc_dynamic_risk(atr_pct, risk_cfg) -> tuple[float, float]:
-    """signal_generator.SignalGenerator._calc_dynamic_risk()와 동일 로직 재현"""
-    if not atr_pct or atr_pct <= 0:
-        return risk_cfg["stop_loss_pct"], risk_cfg["take_profit_pct"]
-    stop = -atr_pct * risk_cfg["atr_stop_multiplier"]
-    stop = max(risk_cfg["stop_loss_min_pct"], min(risk_cfg["stop_loss_max_pct"], stop))
-    target = atr_pct * risk_cfg["atr_target_multiplier"]
-    target = max(risk_cfg["take_profit_min_pct"], min(risk_cfg["take_profit_max_pct"], target))
-    return round(stop, 2), round(target, 2)
-
-
 def calc_dynamic_risk_mult(atr_pct, risk_cfg, stop_mult: float, target_mult: float) -> tuple[float, float]:
-    """calc_dynamic_risk()와 동일하지만 atr_stop_multiplier/atr_target_multiplier를
-    grid search용으로 임의 값으로 교체 — clamp(min/max) 범위는 config.yaml risk 값 그대로 사용"""
+    """signal_generator.SignalGenerator._calc_dynamic_risk()와 동일 로직 재현 —
+    atr_stop_multiplier/atr_target_multiplier를 인자로 받아 grid search에도 재사용
+    (2026-09-14 코드 리뷰: 원래 calc_dynamic_risk()가 이 로직을 독립적으로 들고 있어
+    grid search용 사본과 clamp 로직이 갈라질 위험이 있었음 — 하나로 합침)"""
     if not atr_pct or atr_pct <= 0:
         return risk_cfg["stop_loss_pct"], risk_cfg["take_profit_pct"]
     stop = -atr_pct * stop_mult
@@ -115,6 +106,14 @@ def calc_dynamic_risk_mult(atr_pct, risk_cfg, stop_mult: float, target_mult: flo
     target = atr_pct * target_mult
     target = max(risk_cfg["take_profit_min_pct"], min(risk_cfg["take_profit_max_pct"], target))
     return round(stop, 2), round(target, 2)
+
+
+def calc_dynamic_risk(atr_pct, risk_cfg) -> tuple[float, float]:
+    """운영값(config.yaml risk.atr_stop_multiplier/atr_target_multiplier)으로
+    calc_dynamic_risk_mult()를 호출 — 실제 운영 배수 기준 계산"""
+    return calc_dynamic_risk_mult(
+        atr_pct, risk_cfg, risk_cfg["atr_stop_multiplier"], risk_cfg["atr_target_multiplier"]
+    )
 
 
 # 손절/목표 ATR 배수 그리드서치 (2026-09-14 추가, "수익 최대화" 검토)

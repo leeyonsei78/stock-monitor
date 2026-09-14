@@ -212,12 +212,10 @@ class TechnicalIndicators:
     # 아이디어를 검토하다, 같은 기간을 다른 표준편차로 겹치는 방식은 이동평균선 정배열
     # 로직과 개념이 겹쳐 새 정보량이 적을 것으로 판단해 기각 — 대신 밴드 폭이라는
     # 진짜 다른 축을 후보로 채택함(위 신호 점수 체계 문서 참고).
-    def calc_bollinger_width(self, df: pd.DataFrame) -> pd.Series:
-        cfg = self._cfg["indicators"]["bollinger_bands"]
-        period, std_dev = cfg["period"], cfg["std_dev"]
-        mid = df["close"].rolling(period).mean()
-        std = df["close"].rolling(period).std()
-        return (2 * std_dev * std) / mid.replace(0, np.nan)
+    def calc_bollinger_width(self, bb_df: pd.DataFrame) -> pd.Series:
+        """calc_bollinger()가 이미 계산한 upper/mid/lower를 재사용 — rolling mean/std를
+        중복 계산하지 않음 (2026-09-14 최초 구현은 독립적으로 재계산했었음, 리뷰로 발견해 수정)"""
+        return (bb_df["upper"] - bb_df["lower"]) / bb_df["mid"].replace(0, np.nan)
 
     def bollinger_squeeze_signal(self, width: pd.Series, lookback: int = 120) -> float:
         """밴드 폭이 최근 lookback 거래일 대비 얼마나 좁은지 0(안 좁음)~1(극단적 스퀴즈)
@@ -449,7 +447,7 @@ class TechnicalIndicators:
 
         # ── 실험적 지표 (2026-09-14 추가) — 아직 신호 점수(tech_score)엔 미반영,
         # signals/indicators에만 기록해 backtest_technical_score.py로 예측력 검증 중
-        bb_width_series = self.calc_bollinger_width(df)
+        bb_width_series = self.calc_bollinger_width(bb_df)
         bb_squeeze_sig = self.bollinger_squeeze_signal(bb_width_series)
         adx_series = self.calc_adx(df)
         adx_val = adx_series.iloc[-1]

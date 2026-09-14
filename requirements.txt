@@ -43,3 +43,9 @@ holidays>=0.46
 # ⚠️ KRX 회원 로그인(KRX_ID/KRX_PW 환경변수) 필요 — 최초엔 "API 키 불필요"로 잘못 적었다가
 # 실측(드라이런)으로 정정, 미설정 시 이 기능만 조용히 비활성화(스캔엔 영향 없음). 상세는 krx_data.py 참고
 pykrx>=1.0.51
+
+# 통계적 유의성 검정 (backtest_trading_rules.py sig_test() — t-검정)
+# 2026-09-14: GitHub Actions clean venv에 여태 없었던 게 이번에 backtest_trading_rules.yml
+# 워크플로우를 처음 추가해 실제로 돌려보고서야 드러남 — 그동안 t-검정 결과가 전부
+# "검정 실패(No module named 'scipy')"로 조용히 누락되고 있었을 가능성 있음
+scipy>=1.11.0

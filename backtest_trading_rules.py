@@ -105,6 +105,28 @@ def calc_dynamic_risk(atr_pct, risk_cfg) -> tuple[float, float]:
     return round(stop, 2), round(target, 2)
 
 
+def calc_dynamic_risk_mult(atr_pct, risk_cfg, stop_mult: float, target_mult: float) -> tuple[float, float]:
+    """calc_dynamic_risk()와 동일하지만 atr_stop_multiplier/atr_target_multiplier를
+    grid search용으로 임의 값으로 교체 — clamp(min/max) 범위는 config.yaml risk 값 그대로 사용"""
+    if not atr_pct or atr_pct <= 0:
+        return risk_cfg["stop_loss_pct"], risk_cfg["take_profit_pct"]
+    stop = -atr_pct * stop_mult
+    stop = max(risk_cfg["stop_loss_min_pct"], min(risk_cfg["stop_loss_max_pct"], stop))
+    target = atr_pct * target_mult
+    target = max(risk_cfg["take_profit_min_pct"], min(risk_cfg["take_profit_max_pct"], target))
+    return round(stop, 2), round(target, 2)
+
+
+# 손절/목표 ATR 배수 그리드서치 (2026-09-14 추가, "수익 최대화" 검토)
+# 현재 운영값(stop×1.5/target×2.5)이 데이터 기반 최적치가 아니라 임의 설정값이었음 —
+# 가상매매 손절 39건 중 90%가 애초에 목표가 미도달이었던 진단(2026-09-03)에서 시작된 질문:
+# "목표가 폭 자체가 너무 넓어 수익 실현을 깎아먹고 있는 건 아닌가"를 실제 매수 게이트를
+# 통과한(buy_gates_pass) 케이스만 대상으로 여러 배수 조합의 평균(초과)수익률을 비교해 확인.
+# 두 그리드 모두 현재 운영값(1.5/2.5)을 포함해 비교 기준점으로 삼음.
+STOP_MULT_GRID = [1.0, 1.25, 1.5, 2.0]
+TARGET_MULT_GRID = [1.5, 2.0, 2.5, 3.0, 4.0]
+
+
 def simulate_trade(records: list[dict], entry_idx: int, entry_price: float,
                     stop_pct: float, target_pct: float, max_hold_days: int) -> dict:
     """virtual_trader.py의 손절>목표>타임아웃 우선순위와 동일하게 종가 기준 워크포워드.
@@ -155,6 +177,7 @@ def main():
         return (p1 - p0) / p0 * 100
 
     rows = []
+    grid_rows = []  # buy_gates_pass 케이스만 ATR 배수 그리드서치 대상 (아래 참고)
     for code, name in universe:
         try:
             records = load_ohlcv(code, start_date, end_date)
@@ -225,6 +248,23 @@ def main():
                 **outcome,
             })
             added += 1
+
+            # ATR 배수 그리드서치 — 실제 매수 게이트를 통과한 케이스만 (production과 같은
+            # 진입 시점을 그대로 쓰고 리스크관리 파라미터만 바꿔서 비교하는 게 목적)
+            if group == "buy_gates_pass":
+                for sm in STOP_MULT_GRID:
+                    for tm in TARGET_MULT_GRID:
+                        g_stop, g_target = calc_dynamic_risk_mult(atr_pct, risk_cfg, sm, tm)
+                        g_outcome = simulate_trade(records, i, entry_price, g_stop, g_target, MAX_HOLD_DAYS)
+                        g_exit_date = records[i + g_outcome["hold_days"]]["date"]
+                        g_kr = kospi_return_over(date_i, g_exit_date)
+                        g_excess = (g_outcome["return_pct"] - g_kr) if g_kr is not None else None
+                        grid_rows.append({
+                            "stop_mult": sm, "target_mult": tm,
+                            "return_pct": g_outcome["return_pct"],
+                            "excess_return_pct": g_excess,
+                            "exit_reason": g_outcome["exit_reason"],
+                        })
         print(f"  [완료] {name}({code}): {added}건 (매수선 통과 + 시뮬레이션)")
 
     df = pd.DataFrame(rows)
@@ -302,6 +342,35 @@ def main():
         f"  게이트 통과 vs RSI차단 평균 차이: "
         f"{sig_test(subs['buy_gates_pass']['excess_return_pct'], subs['blocked_rsi']['excess_return_pct'])}"
     )
+
+    if grid_rows:
+        gdf = pd.DataFrame(grid_rows)
+        lines.append(
+            f"\n*손절/목표 ATR 배수 그리드서치* (게이트 통과군 {len(gdf) // (len(STOP_MULT_GRID) * len(TARGET_MULT_GRID))}건 "
+            f"× {len(STOP_MULT_GRID)}×{len(TARGET_MULT_GRID)}조합, 현재 운영값: stop×1.5/target×2.5)"
+        )
+        summary = []
+        for (sm, tm), sub in gdf.groupby(["stop_mult", "target_mult"]):
+            n = len(sub)
+            win_rate = (sub["return_pct"] > 0).mean() * 100
+            avg_ret = sub["return_pct"].mean()
+            avg_excess = sub["excess_return_pct"].mean()
+            target_share = (sub["exit_reason"] == "target_hit").mean() * 100
+            stop_share = (sub["exit_reason"] == "stop_hit").mean() * 100
+            timeout_share = (sub["exit_reason"] == "timeout").mean() * 100
+            summary.append((sm, tm, n, win_rate, avg_ret, avg_excess, target_share, stop_share, timeout_share))
+        summary.sort(key=lambda r: r[5], reverse=True)  # 평균초과수익률 내림차순
+        for sm, tm, n, win_rate, avg_ret, avg_excess, target_share, stop_share, timeout_share in summary:
+            marker = " ← 현재 운영값" if sm == 1.5 and tm == 2.5 else ""
+            lines.append(
+                f"  stop×{sm}/target×{tm}: {n}건, 승률 {win_rate:.1f}%, 평균수익률 {avg_ret:+.2f}%, "
+                f"평균초과수익률 {avg_excess:+.2f}%, 목표 {target_share:.1f}%/손절 {stop_share:.1f}%/"
+                f"타임아웃 {timeout_share:.1f}%{marker}"
+            )
+        lines.append(
+            "\n_그리드서치 결과는 참고용 — atr_stop_multiplier/atr_target_multiplier 변경은 "
+            "자동 반영되지 않으며 검토 후 수동으로 적용합니다._"
+        )
 
     lines.append(
         "\n_이 리포트는 통계치만 산출합니다 — buy_conditions/risk 파라미터 변경은 "

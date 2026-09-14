@@ -694,6 +694,134 @@ jobs:
           report("기관 순매수/순매도별 익일 수익률", institution_buckets)
           PY
 
+      - name: (진단용, Slack 미전송) 투자자 수급 가중공식 정식 재현 — InvestorAnalyzer 실제 공식으로 백테스트
+        # 2026-09-14: 위(2026-09-11) 진단은 "당일 순매수 부호"만 본 단순화 버전이었음 — 이번엔
+        # investor_analyzer.py의 실제 가중공식(외국인45%+기관35%+개인20%역방향, 당일50%+추세50%,
+        # 연속일수 보너스)을 InvestorAnalyzer를 직접 import해 그대로 재현. 종목별 아카이브를
+        # 시간순 정렬해 각 시점마다 그 이전 최대 5일치를 history로 넘겨 get_investor_score()를
+        # 그대로 호출 — 근사가 아니라 실제 운영과 동일한 계산 경로.
+        # ⚠️ 표본 한계: 아카이브가 2026-08-25부터 수집 시작(3주치 남짓)이라 history가 5일
+        # 미만인 이른 시점 데이터가 섞여 있음 — history 깊이별로도 나눠서 확인(짧은 history일수록
+        # analyze_history()의 연속일수·추세 성분이 왜곡될 수 있음)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from collections import defaultdict
+          from datetime import date, timedelta
+          from supabase import create_client
+          import FinanceDataReader as fdr
+          import pandas as pd
+          from src.analysis.investor_analyzer import InvestorAnalyzer
+
+          analyzer = InvestorAnalyzer()
+          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          result = (
+              client.table("stock_investor_daily_archive")
+              .select("ticker,archive_date,foreign_qty,institution_qty,individual_qty,program_qty")
+              .order("ticker")
+              .order("archive_date")
+              .execute()
+          )
+          rows = result.data or []
+          print(f"[진단] 투자자 수급 아카이브 {len(rows)}건 — 실제 가중공식(InvestorAnalyzer) 재현 백테스트")
+
+          by_ticker = defaultdict(list)
+          for r in rows:
+              by_ticker[r["ticker"]].append(r)
+
+          def to_dict(row):
+              return {
+                  "foreign": row.get("foreign_qty") or 0,
+                  "institution": row.get("institution_qty") or 0,
+                  "individual": row.get("individual_qty") or 0,
+                  "program": row.get("program_qty") or 0,
+              }
+
+          scored = []  # (score, next_return, history_len)
+          errors = 0
+
+          for ticker, trows in by_ticker.items():
+              trows.sort(key=lambda r: r["archive_date"])
+              if len(trows) < 2:
+                  continue
+              dates = [date(int(r["archive_date"][:4]), int(r["archive_date"][4:6]), int(r["archive_date"][6:])) for r in trows]
+              start, end = min(dates), max(dates)
+              try:
+                  df = fdr.DataReader(ticker, start=start - timedelta(days=5), end=end + timedelta(days=10))
+              except Exception:
+                  errors += len(trows)
+                  continue
+              if df.empty:
+                  errors += len(trows)
+                  continue
+              df.index = df.index.date
+              close_dates = sorted(df.index)
+
+              for i, r in enumerate(trows):
+                  d = dates[i]
+                  if d not in close_dates:
+                      errors += 1
+                      continue
+                  idx = close_dates.index(d)
+                  if idx + 1 >= len(close_dates):
+                      errors += 1  # 다음 거래일 데이터 아직 없음(최근 아카이브 날짜)
+                      continue
+                  next_d = close_dates[idx + 1]
+                  try:
+                      close_today = float(df.loc[d, "Close"])
+                      close_next = float(df.loc[next_d, "Close"])
+                  except Exception:
+                      errors += 1
+                      continue
+                  next_return = (close_next - close_today) / close_today * 100
+
+                  history = [to_dict(h) for h in trows[max(0, i - 5):i]]
+                  current = to_dict(r)
+                  try:
+                      score_result = analyzer.get_investor_score(current, history)
+                  except Exception as e:
+                      errors += 1
+                      continue
+                  scored.append((score_result["score"], next_return, len(history)))
+
+          print(f"[진단] 점수 산출 성공 {len(scored)}건, 조회실패/제외 {errors}건")
+
+          if len(scored) >= 20:
+              sdf = pd.DataFrame(scored, columns=["score", "next_return", "hist_len"])
+              corr = sdf["score"].corr(sdf["next_return"])
+              top = sdf[sdf["score"] >= sdf["score"].quantile(0.8)]
+              bot = sdf[sdf["score"] <= sdf["score"].quantile(0.2)]
+              spread = top["next_return"].mean() - bot["next_return"].mean()
+              print(f"[전체] corr(투자자심리점수, 익일수익률)={corr:+.4f}, 상하위20% 스프레드={spread:+.3f}%p (n={len(sdf)})")
+
+              pos = sdf[sdf["score"] > 0]
+              neg = sdf[sdf["score"] < 0]
+              for label, g in [("score>0(순매수 우위)", pos), ("score<0(순매도 우위)", neg)]:
+                  if len(g) < 5:
+                      print(f"  {label}: {len(g)}건 (5건 미만, 참고용)")
+                      continue
+                  hits = (g["next_return"] > 0).sum()
+                  avg = g["next_return"].mean()
+                  print(f"  {label}: {len(g)}건, 익일상승 {hits}/{len(g)}({hits/len(g)*100:.0f}%), 평균 {avg:+.2f}%")
+
+              print("[history 깊이별 재확인 — 표본 대부분이 짧은 history인지 확인]")
+              for lo, hi, label in [(0, 1, "history 0~1일(아카이브 초반, 신뢰도 낮음)"), (2, 4, "history 2~4일"), (5, 5, "history 5일(정상 깊이)")]:
+                  g = sdf[(sdf["hist_len"] >= lo) & (sdf["hist_len"] <= hi)]
+                  if len(g) < 5:
+                      print(f"  {label}: {len(g)}건 (5건 미만, 참고용)")
+                      continue
+                  c = g["score"].corr(g["next_return"])
+                  directional = g[g["score"] != 0]
+                  dir_hits = (((directional["score"] > 0) & (directional["next_return"] > 0)) | ((directional["score"] < 0) & (directional["next_return"] < 0))).sum()
+                  hit_rate = dir_hits / len(directional) * 100 if len(directional) else float("nan")
+                  print(f"  {label}: {len(g)}건, corr={c:+.4f}, 방향적중 {dir_hits}/{len(directional)}({hit_rate:.0f}%)")
+          else:
+              print("[결론] 표본 부족(20건 미만) — 판단 보류")
+          PY
+
       - name: (진단용, Slack 미전송) PER/PBR/호가잔량/체결강도 필드 실측 확인 — 최근 신호 저장값 조회
         # 2026-09-11: PER/PBR 필드가 KIS 응답(FHKST01010100)에 실제로 있는지, save_signal()이
         # 마이그레이션 후 정상 저장하는지를 콘솔에서 직접 확인 — Slack 메시지 본문은 GitHub

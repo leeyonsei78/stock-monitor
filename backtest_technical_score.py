@@ -118,9 +118,12 @@ def main():
                 continue
 
             sig = result.get("signals", {})
+            ind = result.get("indicators", {})
             rows.append({
                 "ticker": code, "name": name, "date": date_i, "score": score, **fwd,
                 **{f"sig_{k}": v for k, v in sig.items()},
+                "ind_atr_pct": ind.get("atr_pct"),
+                "ind_bb_width_pct": ind.get("bb_width_pct"),
             })
             added += 1
         print(f"  [완료] {name}({code}): {added}건")
@@ -169,6 +172,24 @@ def main():
         corr3 = df[col].corr(df["fwd_3d"])
         spread3 = top_g["fwd_3d"].mean() - bot_g["fwd_3d"].mean()
         lines.append(f"  {name_kr}: corr {corr3:+.4f}, 상하위20% 스프레드 {spread3:+.3f}%p")
+
+    # ── bb_squeeze vs ATR% 중복 여부 확인 (2026-09-14, 사용자 요청) ──────────
+    # 둘 다 최근 변동성을 재는 지표라, bb_squeeze의 |향후수익률| 예측력이 ATR%가
+    # 이미 갖고 있던 정보의 재탕인지(높은 상관) 별개 정보인지(낮은 상관) 확인
+    if "sig_bb_squeeze" in df.columns and "ind_atr_pct" in df.columns:
+        valid = df.dropna(subset=["sig_bb_squeeze", "ind_atr_pct"])
+        if len(valid) >= 20:
+            corr_atr = valid["sig_bb_squeeze"].corr(valid["ind_atr_pct"])
+            lines.append(
+                f"\n*bb_squeeze ↔ ATR% 상관관계* (n={len(valid)}) — 둘 다 최근 변동성 측정 지표라 중복 여부 확인용"
+            )
+            lines.append(f"  corr(bb_squeeze, atr_pct): {corr_atr:+.4f}")
+            if abs(corr_atr) >= 0.5:
+                lines.append("  → 상관관계 높음: bb_squeeze가 ATR%와 상당 부분 같은 정보를 재는 것으로 보임")
+            elif abs(corr_atr) >= 0.2:
+                lines.append("  → 상관관계 약함~중간: 일부 겹치지만 별개 정보도 포함하는 것으로 보임")
+            else:
+                lines.append("  → 상관관계 낮음: bb_squeeze는 ATR%와 별개의 정보를 담고 있는 것으로 보임")
 
     lines.append("\n_이 리포트는 통계치만 산출합니다 — signal_weights 변경은 자동 반영되지 않으며 검토 후 수동으로 적용합니다._")
 

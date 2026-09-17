@@ -54,7 +54,7 @@ KST = ZoneInfo("Asia/Seoul")
 # (bb_squeeze/ma_adx_filtered/cmf/obv, 가중치 0)는 이미 백테스트로 노이즈 수준(≤0.03)임이
 # 확인됐고(위 CLAUDE.md "실험적 지표 4개 백테스트" 참고) 이번 실험 목적이 "기존 6개 지표를
 # 사람이 짠 가중치 대신 모델이 다르게 조합하면 나아지는가"이므로 대상에서 제외
-FEATURE_COLS = ["sig_rsi", "sig_macd", "sig_bollinger", "sig_ma", "sig_volume", "sig_relative_strength"]
+FEATURE_COLS = ["sig_rsi", "sig_macd", "sig_bollinger", "sig_moving_average", "sig_volume", "sig_relative_strength"]
 
 TRAIN_FRACTION = 0.7  # 날짜 기준 앞 70%=학습, 뒤 30%=테스트
 

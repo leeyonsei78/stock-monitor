@@ -2,12 +2,18 @@
 Supabase 기반 신호 저장소
 GitHub Actions 실행 간 쿨다운 상태 공유
 """
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from supabase import create_client, Client
 from src.utils.logger import setup_logger
 
 logger = setup_logger("supabase_store")
+
+# PostgREST 스키마 캐시 오류(PGRST204)가 특정 컬럼명을 명시하는 형식 — 예:
+# "Could not find the 'pbr' column of 'stock_signal_log' in the schema cache"
+# (2026-09-11 PER/PBR 마이그레이션 직후 실제 관측된 형식, save_signal() 폴백에서 재사용)
+_MISSING_COLUMN_RE = re.compile(r"Could not find the '(\w+)' column")
 
 
 class SupabaseSignalStore:
@@ -118,22 +124,31 @@ class SupabaseSignalStore:
         if execution_strength is not None:
             row["execution_strength"] = execution_strength
 
-        try:
-            self._client.table("stock_signal_log").insert(row).execute()
-        except Exception as e:
-            # 위 컬럼들이 아직 마이그레이션 안 됐을 수 있음 — 이걸로 신호 로깅(쿨다운의 근간) 전체가
-            # 막히면 안 되므로 그 필드들만 빼고 재시도 (expected_return_pct는 이미 운영 중인
-            # 컬럼이라 이 폴백 대상에서 제외)
-            stripped = [c for c in self._OPTIONAL_SIGNAL_COLUMNS if row.pop(c, None) is not None]
-            if stripped:
-                logger.warning(f"[{ticker}] {stripped} 포함 저장 실패({e}) — 제외하고 재시도 (컬럼 마이그레이션 필요할 수 있음)")
-                try:
-                    self._client.table("stock_signal_log").insert(row).execute()
-                    return
-                except Exception as e2:
-                    logger.error(f"Supabase 신호 저장 실패(재시도 포함) [{ticker}]: {e2}")
-                    return
-            logger.error(f"Supabase 신호 저장 실패 [{ticker}]: {e}")
+        # 위 선택 컬럼들이 아직 마이그레이션 안 됐거나(신규 컬럼) 마이그레이션 직후 PostgREST
+        # 스키마 캐시가 아직 안 돌았을 수 있음(2026-09-11 PER/PBR 사례로 실측, CLAUDE.md 참고)
+        # — 이걸로 신호 로깅(쿨다운의 근간) 전체가 막히면 안 되므로 실패하면 재시도함.
+        # 컬럼이 12개(2026-09-14 기준)로 늘면서 예전처럼 "실패하면 전부 스트립"이면 문제
+        # 컬럼 1개 때문에 나머지 11개 선택 지표 값까지 매번 같이 날아감 — PostgREST 에러가
+        # 컬럼명을 특정하면(위 정규식) 그 컬럼 하나만 제거하고 재시도해 나머지는 보존,
+        # 특정 못 하면(형식이 다른 에러 등) 기존처럼 선택 컬럼 전부를 제거하는 것으로 안전하게 폴백
+        attempts_left = len(self._OPTIONAL_SIGNAL_COLUMNS) + 1
+        while attempts_left > 0:
+            attempts_left -= 1
+            try:
+                self._client.table("stock_signal_log").insert(row).execute()
+                return
+            except Exception as e:
+                m = _MISSING_COLUMN_RE.search(str(e))
+                col = m.group(1) if m else None
+                if col and col in self._OPTIONAL_SIGNAL_COLUMNS and row.pop(col, None) is not None:
+                    logger.warning(f"[{ticker}] '{col}' 컬럼 저장 실패({e}) — 그 컬럼만 제외하고 재시도")
+                    continue
+                stripped = [c for c in self._OPTIONAL_SIGNAL_COLUMNS if row.pop(c, None) is not None]
+                if stripped:
+                    logger.warning(f"[{ticker}] {stripped} 포함 저장 실패({e}) — 원인 컬럼 특정 불가, 전부 제외하고 재시도")
+                    continue
+                logger.error(f"Supabase 신호 저장 실패(재시도 포함) [{ticker}]: {e}")
+                return
 
     # ── 5분 변화율 추적 ──────────────────────────────────────────
     def save_price_snapshot(self, ticker: str, price: int):

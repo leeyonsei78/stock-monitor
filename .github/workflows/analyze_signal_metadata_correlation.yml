@@ -602,6 +602,102 @@ jobs:
               )
           PY
 
+      - name: (진단용, Slack 미전송) 5일/10일 지평 적중률 확인 — 보유기간 재정의 검토
+        # 2026-09-17: "적중률 높일 방안" 검토 후속 — 위 1일 vs 3일 비교(2026-09-11)에서 매수 신호가
+        # 1일 29%→3일 44%로 뚜렷이 개선된 것을 계기로, 이 시스템이 "1~3일 단기 반전 예측기"가
+        # 아니라 "며칠~1~2주짜리 추세 포착기"에 더 가까울 가능성을 검토 — ATR×2.5 목표가 자체가
+        # 통상 하루 안에 안 닿는 폭으로 설계돼 있는 점과도 일치하는 가설. stock_signal_log엔
+        # 1일/3일 스냅샷만 있어(5일/10일 컬럼 없음, 스키마 변경 없이) FinanceDataReader로
+        # 종목당 1회 조회해 5거래일/10거래일 후 종가를 직접 계산 — 위 "거래대금 구간별 적중률"
+        # 진단과 동일한 날짜 매칭 패턴 재사용. 새 Supabase 컬럼·마이그레이션 불필요
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from collections import defaultdict
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+          import FinanceDataReader as fdr
+
+          KST = ZoneInfo("Asia/Seoul")
+          BUY_TYPES = {SignalType.BUY.value, SignalType.STRONG_BUY.value}
+          SELL_TYPES = {SignalType.SELL.value, SignalType.STRONG_SELL.value}
+          WATCH_TYPE = SignalType.WATCH.value
+
+          def is_hit(signal_type, ret):
+              return ret < 0 if signal_type in SELL_TYPES else ret > 0
+
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          # 10거래일(주말/공휴일 감안 ~16 달력일) 이상 지난 신호만 대상 — since는 넉넉히 180일
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          cutoff = datetime.now(KST) - timedelta(days=16)
+          rows = store.get_evaluated_signals(since_iso)
+          old_rows = []
+          for r in rows:
+              alerted_kst = datetime.fromisoformat(r["alerted_at"].replace("Z", "+00:00")).astimezone(KST)
+              if alerted_kst < cutoff and r.get("current_price"):
+                  r["_alerted_kst"] = alerted_kst
+                  old_rows.append(r)
+          print(f"[진단] 5일/10일 지평 계산 대상(10거래일 이상 경과) {len(old_rows)}건 — 전체 평가완료 {len(rows)}건 중")
+
+          by_ticker = defaultdict(list)
+          for r in old_rows:
+              by_ticker[r["ticker"]].append(r)
+
+          errors = 0
+          for ticker, trows in by_ticker.items():
+              dates = [r["_alerted_kst"].date() for r in trows]
+              start, end = min(dates), max(dates)
+              try:
+                  df = fdr.DataReader(ticker, start=start - timedelta(days=5), end=end + timedelta(days=20))
+              except Exception as e:
+                  errors += len(trows)
+                  print(f"  [{ticker}] 조회 실패: {e}")
+                  continue
+              if df.empty:
+                  errors += len(trows)
+                  continue
+              df.index = df.index.date
+              close_dates = sorted(df.index)
+              for r, d in zip(trows, dates):
+                  if d not in close_dates:
+                      errors += 1
+                      continue
+                  idx = close_dates.index(d)
+                  entry = r["current_price"]
+                  for h, key in [(5, "fwd_5d_pct"), (10, "fwd_10d_pct")]:
+                      if idx + h < len(close_dates):
+                          future_close = float(df.loc[close_dates[idx + h], "Close"])
+                          r[key] = (future_close - entry) / entry * 100
+
+          print(f"[진단] FDR 조회 실패/날짜매칭 실패로 제외 {errors}건")
+
+          for label, types in [("매수", BUY_TYPES), ("매도", SELL_TYPES), ("관심", {WATCH_TYPE})]:
+              group_all = [r for r in old_rows if r["signal_type"] in types]
+              lines = [f"1일 {len(group_all)}건"]
+
+              def bucket(key, horizon_label):
+                  g = [r for r in group_all if r.get(key) is not None]
+                  if len(g) < 5:
+                      return f"{horizon_label} {len(g)}건(5건 미만, 참고용)"
+                  hits = sum(1 for r in g if is_hit(r["signal_type"], r[key]))
+                  avg = sum(r[key] for r in g) / len(g)
+                  return f"{horizon_label} {len(g)}건 적중 {hits}/{len(g)}({hits/len(g)*100:.0f}%, 평균 {avg:+.1f}%)"
+
+              if len(group_all) < 5:
+                  print(f"  {label}: {len(group_all)}건 (5건 미만, 참고용)")
+                  continue
+              hits_1d = sum(1 for r in group_all if is_hit(r["signal_type"], r["return_1d_pct"]))
+              avg_1d = sum(r["return_1d_pct"] for r in group_all) / len(group_all)
+              print(f"  {label} — 1일: {len(group_all)}건 적중 {hits_1d}/{len(group_all)}({hits_1d/len(group_all)*100:.0f}%, 평균 {avg_1d:+.1f}%)")
+              print(f"    {bucket('fwd_5d_pct', '5일')}")
+              print(f"    {bucket('fwd_10d_pct', '10일')}")
+          PY
+
       - name: (진단용, Slack 미전송) 투자자 수급 아카이브 — 외국인/기관 순매수와 익일 수익률
         # 2026-09-11: 투자자 수급(30% 가중치)은 KIS API가 최근 30거래일만 제공해 지금까지
         # 단 한 번도 백테스트된 적이 없는 유일한 신호 성분(technical_score만 backtest_technical_score.py로

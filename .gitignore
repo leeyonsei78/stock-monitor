@@ -8,3 +8,4 @@ logs/
 .pytest_cache/
 backtest_result*.csv
 backtest_trading_rules_result.csv
+backtest_ml_technical_score_result.csv

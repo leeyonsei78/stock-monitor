@@ -66,7 +66,12 @@ def load_ohlcv(code: str, start: datetime, end: datetime) -> list[dict]:
     ]
 
 
-def main():
+def collect_rows() -> pd.DataFrame:
+    """UNIVERSE × 2년치로 get_technical_score()를 재계산해 종합점수/개별지표 신호값 +
+    향후 1/3/5일 수익률을 담은 DataFrame을 만든다.
+    이 리포트(main())와 backtest_ml_technical_score.py(기술점수 ML 실험, 2026-09-17 추가)가
+    동일한 데이터 수집 로직을 공유 — 예전에 calc_dynamic_risk 중복(2026-09-14 코드리뷰로
+    발견·통합)과 같은 유형의 드리프트를 처음부터 방지하기 위해 별도 함수로 분리."""
     ti = TechnicalIndicators()
 
     end_date = datetime.now()
@@ -128,7 +133,11 @@ def main():
             added += 1
         print(f"  [완료] {name}({code}): {added}건")
 
-    df = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
+def main():
+    df = collect_rows()
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
     lines = [f"📐 *분기별 기술점수 백테스트* — {now_str}"]
     lines.append(f"샘플: {len(df)}건 ({df['ticker'].nunique() if len(df) else 0}개 종목, 최근 {BACKTEST_CALENDAR_DAYS}일)")

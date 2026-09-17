@@ -49,3 +49,8 @@ pykrx>=1.0.51
 # 워크플로우를 처음 추가해 실제로 돌려보고서야 드러남 — 그동안 t-검정 결과가 전부
 # "검정 실패(No module named 'scipy')"로 조용히 누락되고 있었을 가능성 있음
 scipy>=1.11.0
+
+# 기술점수 ML 대체 실험 (backtest_ml_technical_score.py, 2026-09-17 추가)
+# Ridge/LogisticRegression만 사용 — 신호 자체가 약해(corr≤0.03) 복잡한 비선형 모델은
+# 노이즈 과적합 위험이 커서 1차 실험에서 의도적으로 배제, 위 CLAUDE.md 참고
+scikit-learn>=1.4.0

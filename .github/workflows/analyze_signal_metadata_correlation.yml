@@ -610,6 +610,15 @@ jobs:
         # 1일/3일 스냅샷만 있어(5일/10일 컬럼 없음, 스키마 변경 없이) FinanceDataReader로
         # 종목당 1회 조회해 5거래일/10거래일 후 종가를 직접 계산 — 위 "거래대금 구간별 적중률"
         # 진단과 동일한 날짜 매칭 패턴 재사용. 새 Supabase 컬럼·마이그레이션 불필요
+        # 2026-09-17 같은 날 후속: 최초 실행(원시 수익률)에서 매수 40%→44%→72%(평균 +7.8%)로
+        # 개선되는 동시에 매도가 54%→51%→46%로 반대 방향 악화되는 패턴이 나옴 — backtest_trading_rules.py가
+        # 이미 겪은 "원시수익률 역전이 초과수익률+유의성검정 적용 시 사라짐(p=0.324, 2026-09-14)"과
+        # 같은 유형의 시장 전체 드리프트 교란 가능성을 배제 못 해, 같은 방식(코스피 수익률 차감)의
+        # 초과수익률 버전을 같이 계산해 병기 — KS11을 전체 대상 신호의 날짜범위로 한 번만 조회해
+        # 공유(종목별 재조회 안 함, `_scan_once()`의 `self._index_ohlcv` 공유 방식과 동일 원칙),
+        # 종목과 동일한 "정렬된 거래일 리스트에서의 위치 오프셋" 방식으로 코스피 진입일 인덱스를
+        # 찾아 h거래일 후 코스피 수익률을 계산 → excess = raw - kospi. hit 판정 함수(is_hit)는
+        # 그대로 재사용(부호 규칙 동일, 값만 excess로 교체)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -644,6 +653,28 @@ jobs:
                   old_rows.append(r)
           print(f"[진단] 5일/10일 지평 계산 대상(10거래일 이상 경과) {len(old_rows)}건 — 전체 평가완료 {len(rows)}건 중")
 
+          # ── 코스피(KS11) 한 번만 조회해 전 종목이 공유 (초과수익률 계산용, 2026-09-17 추가) ──
+          kospi_close_dates = []
+          kospi_closes = []
+          if old_rows:
+              all_dates = [r["_alerted_kst"].date() for r in old_rows]
+              k_start, k_end = min(all_dates), max(all_dates)
+              try:
+                  kdf = fdr.DataReader("KS11", start=k_start - timedelta(days=5), end=k_end + timedelta(days=20))
+                  kdf.index = kdf.index.date
+                  kospi_close_dates = sorted(kdf.index)
+                  kospi_closes = [float(kdf.loc[d, "Close"]) for d in kospi_close_dates]
+              except Exception as e:
+                  print(f"[진단] KS11 조회 실패 — 초과수익률 계산 생략: {e}")
+
+          def kospi_fwd_pct(entry_date, h):
+              if entry_date not in kospi_close_dates:
+                  return None
+              idx = kospi_close_dates.index(entry_date)
+              if idx + h >= len(kospi_close_dates):
+                  return None
+              return (kospi_closes[idx + h] - kospi_closes[idx]) / kospi_closes[idx] * 100
+
           by_ticker = defaultdict(list)
           for r in old_rows:
               by_ticker[r["ticker"]].append(r)
@@ -673,12 +704,15 @@ jobs:
                       if idx + h < len(close_dates):
                           future_close = float(df.loc[close_dates[idx + h], "Close"])
                           r[key] = (future_close - entry) / entry * 100
+                          kfwd = kospi_fwd_pct(d, h)
+                          if kfwd is not None:
+                              r[f"excess_{h}d_pct"] = r[key] - kfwd
 
           print(f"[진단] FDR 조회 실패/날짜매칭 실패로 제외 {errors}건")
+          print(f"[진단] 코스피(KS11) 매칭 거래일 {len(kospi_close_dates)}개 — 초과수익률 계산 기준")
 
           for label, types in [("매수", BUY_TYPES), ("매도", SELL_TYPES), ("관심", {WATCH_TYPE})]:
               group_all = [r for r in old_rows if r["signal_type"] in types]
-              lines = [f"1일 {len(group_all)}건"]
 
               def bucket(key, horizon_label):
                   g = [r for r in group_all if r.get(key) is not None]
@@ -694,8 +728,10 @@ jobs:
               hits_1d = sum(1 for r in group_all if is_hit(r["signal_type"], r["return_1d_pct"]))
               avg_1d = sum(r["return_1d_pct"] for r in group_all) / len(group_all)
               print(f"  {label} — 1일: {len(group_all)}건 적중 {hits_1d}/{len(group_all)}({hits_1d/len(group_all)*100:.0f}%, 평균 {avg_1d:+.1f}%)")
-              print(f"    {bucket('fwd_5d_pct', '5일')}")
-              print(f"    {bucket('fwd_10d_pct', '10일')}")
+              print(f"    [원시] {bucket('fwd_5d_pct', '5일')}")
+              print(f"    [원시] {bucket('fwd_10d_pct', '10일')}")
+              print(f"    [초과수익률(vs코스피)] {bucket('excess_5d_pct', '5일')}")
+              print(f"    [초과수익률(vs코스피)] {bucket('excess_10d_pct', '10일')}")
           PY
 
       - name: (진단용, Slack 미전송) 투자자 수급 아카이브 — 외국인/기관 순매수와 익일 수익률

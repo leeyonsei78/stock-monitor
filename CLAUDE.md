@@ -369,6 +369,25 @@ git push origin main
   - **2026-08-24 버그 수정**: `TradeSignal.recommended_qty = int(budget/current_price)`에 최소 수량 보정이 없어 종목가가 종목당 예산(`max_budget_per_stock`, STRONG_BUY는 ×1.5)을 초과하면 0으로 계산되고, `AutoTrader._run_signal_scan()`이 이를 그대로 `OrderManager.buy(quantity=0, ...)`에 넘기던 문제 발견 → `OrderManager.buy()`에 `quantity<=0` 가드 추가로 차단 (현재 워치리스트·스크리닝 가격대에선 실제로 안 터졌지만 모드 전환/워치리스트 변경 시 재현 가능했음)
   - **근본 원인 수정 (2026-08-26)**: 위 08-24 수정은 하류(`OrderManager.buy()`)에서 0수량 주문을 막는 가드였을 뿐, 계산 시점 자체(`signal_generator.py recommended_qty`)는 여전히 0을 반환해 "매수 자체가 스킵"되는 문제는 안 풀렸음 — `realtime_monitor._calc_recommendation`/`virtual_trader.open_if_new`엔 이미 있던 `max(1, ...)` 최소 1주 floor가 이 원천 계산에만 빠져 있던 걸 발견해 동일하게 적용. `int(budget/current_price)` → `max(1, int(budget/current_price)) if current_price > 0 else 0`
 
+## 자동매매 실행/리스크관리 계층 버그 수정 (2026-09-17 추가, "자동매매를 위한 정교화" 검토 중 발견)
+사용자가 "자동매매가 목표이므로 더 정교한 로직과 판단 필요"라며 검토를 요청 — 지금까지의 신호 품질 진단(적중률·상관계수 등)과 별개로 실행/리스크관리 계층(`order_manager.py`/`portfolio.py`)을 코드 리뷰한 결과 문서화된 적 없는 심각한 버그를 발견해 즉시 수정. **`trading.mode: manual`이라 실피해는 없었지만, 자동매매가 여는 모든 포지션이 이 경로(시장가 주문만 사용)를 타므로 모드 전환 전 반드시 필요했던 수정.**
+
+### 🔴 시장가 매수/매도 체결가가 항상 0으로 기록되던 버그
+`order_manager.py`의 `buy()`/`sell()`이 시장가 주문 제출 직후 체결가를 확인하지 않고 그냥 `exec_price = 0`으로 확정하고 있었음 — KIS 주문 제출 API(`order-cash`)는 응답에 체결가를 안 줌(주문번호만 반환)을 간과한 설계였음.
+- **파급 효과**: `Position.unrealized_pnl_pct()`가 `avg_price==0`이면 항상 `0.0%`를 반환하도록 짜여있어(0으로 나누기 방지 가드), 시장가로 연 포지션은 **손절/익절/트레일링스탑이 전부 영구히 발동 불가능**했음(0.0%는 음수 손절선도 양수 익절선도 못 넘음). 매도 쪽은 `sell()`의 `exec_price or pos.avg_price`가 `0`을 falsy로 처리해 `pos.avg_price`로 대체되는 바람에 **시장가 매도 실현손익이 항상 0으로 계산**돼 `check_daily_loss_limit()`(일일손실 서킷브레이커)이 실현손실을 전혀 못 봤음
+- **수정**: `OrderManager._resolve_buy_fill_price()`/`_resolve_sell_fill_price()` 추가
+  - **매수**: 잔고조회(`get_balance()`, TR `VTTC8434R`/`TTTC8434R` — `sync_balance_from_api()`에서 이미 검증된 TR)의 실제 평단가(`pchs_avg_pric`)를 우선 사용. 이 값은 기존 보유분까지 합친 전체 평단가라, 기존 포지션이 있던 경우 이번 신규 매수분만의 단가로 역산(`(브로커전체평단가×브로커전체수량 − 기존평단가×기존수량) / 신규수량`)해야 `Portfolio.add_position()`의 가중평균 계산과 이중 반영되지 않음. 잔고에 아직 반영 안 됐거나(체결 지연) 조회 실패 시 `get_current_price()`로 근사(완전한 체결가는 아니나 0보다 훨씬 안전)
+  - **매도**: 매도 후엔 잔고의 평단가가 (남은 보유분이 있다면) 그 원가일 뿐 이번 매도 체결가가 아니므로 매수와 달리 잔고조회로는 못 얻음 — `get_current_price()`로 근사(시장가 주문은 그 순간 시세 근방에서 즉시 체결되는 게 일반적이라 합리적 근사치)
+  - **새 KIS TR 도입 안 함** — 정확한 체결내역조회 TR(예: 일별주문체결조회)을 쓰면 더 정밀하겠지만, 이 세션 샌드박스가 KIS API를 막고 있어 새 TR의 정확한 필드명을 실측 검증할 수 없는 상태(이 프로젝트 원칙: 실측 안 된 필드명을 자신 있게 쓰지 않음, 위 "체결강도" 섹션 참고)라 이미 검증된 기존 TR(`get_balance`/`get_current_price`)만 재사용하는 근사치로 범위를 좁힘 — **배포 후 `trading.mode: auto` 전환 시점에 실전 검증 권장, 이 근사치가 부정확하면(예: 슬리피지가 큰 저유동성 종목) 그때 체결내역조회 TR을 필드명부터 실측 확인해 정밀화할 것**
+  - 합성 데이터 9케이스(신규매수 잔고평단가 확보/기존포지션 추가매수 역산/잔고미반영시 현재가폴백/전체실패시 0폴백-크래시없음/시장가매도 실현손익 정확 계산/매도시 현재가실패 평단가폴백/손절이 실제로 발동하는지/KST 일일리셋/KST 상수 확인)로 로컬 검증 완료 — 특히 "수정 전엔 avg_price=0이라 영구 미발동했을 손절이 수정 후 정상 발동" 케이스로 근본 버그의 실질 영향까지 확인
+
+### 🟠 `Portfolio.check_daily_loss_limit()`의 naive `date.today()` 타임존 버그
+이 프로젝트가 이미 4건(kis_api.py×2, auto_trader.py, virtual_trader.py) 고쳤던 "호스트 UTC vs KST" 버그(위 "naive `datetime.now()` 호스트 타임존 버그" 섹션 참고)와 정확히 같은 유형인데, 2026-08-26 전수 스윕에서 `portfolio.py`만 누락돼 있었음 — 장전(08~09시 KST=전날 UTC 23~00시 구간)에 실행되면 일일 실현손익 리셋 날짜가 하루 밀릴 수 있었음.
+- **수정**: `date.today()` → `datetime.now(ZoneInfo("Asia/Seoul")).date()`로 교체(`__init__`의 초기값도 동일하게 수정)
+- 합성 데이터로 "어제(KST) 날짜로 강제 세팅 후 오늘 KST 기준 정상 리셋되는지" 확인
+
+이 두 수정 모두 신호 생성 로직(`signal_generator.py` 등)은 건드리지 않음 — "판단"(어느 종목을 살지)이 아니라 "회계"(산 걸 얼마에 샀다고 기록할지) 계층의 정확성 문제였음. 자동매매 정교화의 다음 단계로 검토했던 나머지 항목(미실현손실 포함 일일한도, 지정가 주문 체결 미반영, VM 이전 등)은 아직 미착수 — 사용자 판단 대기 중.
+
 ## 투자자 수급 가중치 (2026-08-21 재조정)
 | 투자자 | 가중치 | 비고 |
 |---|---|---|

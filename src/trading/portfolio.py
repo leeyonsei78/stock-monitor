@@ -3,10 +3,13 @@
 보유 종목, 손익, 일일 한도 추적
 """
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 import yaml
 from src.utils.logger import setup_logger
+
+KST = ZoneInfo("Asia/Seoul")
 
 logger = setup_logger("portfolio")
 
@@ -45,7 +48,7 @@ class Portfolio:
 
         self._positions: dict[str, Position] = {}
         self._daily_realized_pnl: float = 0.0
-        self._daily_date: date = date.today()
+        self._daily_date: date = datetime.now(KST).date()
         self._total_budget = self._trade_cfg["total_budget"]
 
     # ── 포지션 관리 ──────────────────────────────────────────────
@@ -145,10 +148,15 @@ class Portfolio:
         return False
 
     def check_daily_loss_limit(self) -> bool:
-        """일일 최대 손실 한도 초과 여부"""
-        if date.today() != self._daily_date:
+        """일일 최대 손실 한도 초과 여부
+        naive date.today()는 GitHub Actions/VM 호스트가 UTC라 KST와 어긋남(장전 08~09시
+        KST=전날 UTC 23~00시 구간에서 날짜가 하루 밀림) — 2026-09-17 발견, 다른 파일들에서
+        이미 반복 수정된 것과 동일한 유형(CLAUDE.md "naive datetime.now() 호스트 타임존 버그"
+        참고)인데 이 파일만 그 스윕(2026-08-26)에서 누락돼 있었음"""
+        today_kst = datetime.now(KST).date()
+        if today_kst != self._daily_date:
             self._daily_realized_pnl = 0.0
-            self._daily_date = date.today()
+            self._daily_date = today_kst
 
         loss_pct = self._daily_realized_pnl / self._total_budget * 100
         if loss_pct <= self._risk_cfg["max_daily_loss_pct"]:

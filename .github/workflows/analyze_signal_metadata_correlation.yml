@@ -869,3 +869,64 @@ jobs:
           if have_es == 0:
               print("  [참고] execution_strength 전부 비어있음 — 알림이 드물면 정상일 수 있음(쿨다운 통과 종목만 조회), 경고 아님")
           PY
+
+      - name: (진단용, Slack 미전송) 호가잔량·체결강도 vs 적중률 — 1주일치 첫 확인
+        # 2026-09-17: "적중률 높일 방안" 검토 요청으로 재우선순위화 — 호가잔량(bid_ask_ratio)·
+        # 체결강도(execution_strength, 둘 다 2026-09-11 추가)는 EOD 수급(외국인/기관 순매수,
+        # 위 investor archive 진단에서 corr≈0으로 확인)과 달리 그 순간의 실시간 매수/매도
+        # 압력이라 성격이 다른 유일한 미검증 축 — 표본이 아직 1주일치뿐이라 결론은 못 내리지만
+        # "지금 몇 건이 쌓였고 방향이라도 있는지" 최초 확인. return_1d_pct가 채워진(1일 평가
+        # 완료) 신호 중 두 필드가 있는 것만 대상, 자연스러운 중립점(비율=1.0, 체결강도=100)
+        # 기준으로 매수우위/매도우위 2분할 — terciles은 표본이 이만큼 작을 땐 과도한 세분화라
+        # 판단해 다른 진단(거래대금 등)과 달리 2분할만 사용
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          from src.analysis.signal_generator import SignalType
+
+          KST = ZoneInfo("Asia/Seoul")
+          BUY_TYPES = {SignalType.BUY.value, SignalType.STRONG_BUY.value}
+          SELL_TYPES = {SignalType.SELL.value, SignalType.STRONG_SELL.value}
+
+          def is_hit(signal_type, ret):
+              return ret < 0 if signal_type in SELL_TYPES else ret > 0
+
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          # bid_ask_ratio/execution_strength는 2026-09-11 도입이라 그 이후만 봐도 충분 —
+          # since=180일(다른 진단과 동일 창)로 조회해도 그 이전 신호는 두 필드가 애초에 None
+          since_iso = (datetime.now(KST) - timedelta(days=180)).astimezone(timezone.utc).isoformat()
+          rows = store.get_evaluated_signals(since_iso)
+
+          def bucket_print(label, group):
+              if len(group) < 5:
+                  print(f"  {label}: {len(group)}건 (5건 미만, 참고용)")
+                  return
+              hits = sum(1 for r in group if is_hit(r["signal_type"], r["return_1d_pct"]))
+              avg = sum(r["return_1d_pct"] for r in group) / len(group)
+              print(f"  {label}: {len(group)}건, 적중 {hits}/{len(group)}({hits/len(group)*100:.0f}%), 평균 {avg:+.1f}%")
+
+          bar_rows = [r for r in rows if r.get("bid_ask_ratio") is not None]
+          print(f"[진단] bid_ask_ratio 있는 평가완료 신호 {len(bar_rows)}건 (전체 평가완료 {len(rows)}건 중)")
+          bucket_print("매수잔량 우위(bid_ask_ratio>1)", [r for r in bar_rows if r["bid_ask_ratio"] > 1])
+          bucket_print("매도잔량 우위(bid_ask_ratio<=1)", [r for r in bar_rows if r["bid_ask_ratio"] <= 1])
+          buy_bar = [r for r in bar_rows if r["signal_type"] in BUY_TYPES]
+          bucket_print("  (매수 신호만) 매수잔량 우위", [r for r in buy_bar if r["bid_ask_ratio"] > 1])
+          bucket_print("  (매수 신호만) 매도잔량 우위", [r for r in buy_bar if r["bid_ask_ratio"] <= 1])
+
+          es_rows = [r for r in rows if r.get("execution_strength") is not None]
+          print(f"[진단] execution_strength 있는 평가완료 신호 {len(es_rows)}건 (전체 평가완료 {len(rows)}건 중)")
+          bucket_print("체결강도 매수우위(>100)", [r for r in es_rows if r["execution_strength"] > 100])
+          bucket_print("체결강도 매도우위(<=100)", [r for r in es_rows if r["execution_strength"] <= 100])
+          buy_es = [r for r in es_rows if r["signal_type"] in BUY_TYPES]
+          bucket_print("  (매수 신호만) 체결강도 매수우위", [r for r in buy_es if r["execution_strength"] > 100])
+          bucket_print("  (매수 신호만) 체결강도 매도우위", [r for r in buy_es if r["execution_strength"] <= 100])
+
+          if len(bar_rows) < 15 and len(es_rows) < 15:
+              print("[결론] 표본이 너무 작아(15건 미만) 판단 보류 — 2주 정도 더 쌓인 뒤 재확인 권장")
+          PY

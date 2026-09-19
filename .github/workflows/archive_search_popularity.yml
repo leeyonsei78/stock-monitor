@@ -32,14 +32,34 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
 
-      - name: 임시 진단 - 네이버 실측 파싱 확인 (2026-09-19, 확인 후 제거 예정)
+      - name: 임시 진단2 - 네이버 원본 HTML 구조 확인 (2026-09-19, 확인 후 제거 예정)
         run: |
           .venv/bin/python -c "
-          from src.api.naver_search import get_popular_search_stocks
-          rows = get_popular_search_stocks(limit=10)
-          print(f'파싱 결과 {len(rows)}건')
-          for r in rows:
-              print(r)
+          import re
+          import requests
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'}
+          url = 'https://finance.naver.com/sise/lastsearch2.naver'
+          resp = requests.get(url, headers=headers, timeout=10)
+          text = resp.text
+          print('status', resp.status_code, 'len', len(text))
+          print('code= count:', text.count('code='))
+          m = re.findall(r'code=(\d{6})', text)
+          print('6digit code matches:', len(m), m[:10])
+          # find any table class names
+          classes = set(re.findall(r'<table[^>]*class=\"([^\"]+)\"', text))
+          print('table classes found:', classes)
+          # title tag
+          t = re.search(r'<title>(.*?)</title>', text, re.S)
+          print('title:', t.group(1).strip() if t else None)
+          # dump a slice around first occurrence of item/main or 'lastsearch' related keyword
+          idx = text.find('item/main.naver')
+          print('item/main.naver idx:', idx)
+          if idx == -1:
+              idx2 = text.find('code=')
+              print('first code= idx:', idx2)
+              print(text[max(0,idx2-200):idx2+200] if idx2 != -1 else text[:1000])
+          else:
+              print(text[max(0,idx-200):idx+200])
           "
 
       - name: 인기검색종목 아카이빙

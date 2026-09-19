@@ -32,41 +32,6 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
 
-      - name: 임시 진단4 - stock.naver.com 참조 컨텍스트 + 신규 도메인 직접 시도 (2026-09-19, 확인 후 제거 예정)
-        run: |
-          cat > /tmp/diag4.py <<'PYEOF'
-          import re
-          import requests
-
-          headers = {
-              "User-Agent": (
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-              )
-          }
-          old_url = "https://finance.naver.com/sise/lastsearch2.naver"
-          resp = requests.get(old_url, headers=headers, timeout=10)
-          text = resp.text
-
-          for m in re.finditer(r"stock\.naver\.com", text):
-              i = m.start()
-              print("---context---")
-              print(text[max(0, i - 150):i + 150])
-
-          candidates = [
-              "https://m.stock.naver.com/domestic/interest",
-              "https://m.stock.naver.com/api/stocks/interest",
-              "https://finance.naver.com/sise/sise_rise.naver",
-          ]
-          for url in candidates:
-              try:
-                  r = requests.get(url, headers=headers, timeout=10)
-                  print(url, "->", r.status_code, "len", len(r.text), "ct", r.headers.get("content-type"))
-              except Exception as e:
-                  print(url, "-> ERROR", e)
-          PYEOF
-          .venv/bin/python /tmp/diag4.py
-
       - name: 인기검색종목 아카이빙
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

@@ -1,0 +1,45 @@
+name: Google Trends 검색관심도 백테스트
+
+on:
+  workflow_dispatch:  # 수동 실행 버튼 — backtest_google_trends.py와 동일하게
+                      # pytrends 레이트리밋 리스크가 있어 정기 자동 실행 대상 아님(CLAUDE.md 참고)
+
+jobs:
+  google-trends-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # 35종목 × (요청+3초 딜레이+재시도) — pytrends 지연 감안 여유 있게
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: pip 캐시 (패키지 다운로드만 캐싱 — venv 심볼릭 링크 파손 방지)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - name: 패키지 설치
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
+
+      - name: Google Trends 검색관심도 백테스트 실행
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        run: .venv/bin/python backtest_google_trends.py
+
+      - name: 결과 CSV 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-google-trends-result-${{ github.run_id }}
+          path: backtest_google_trends_result.csv
+          retention-days: 90
+          if-no-files-found: warn

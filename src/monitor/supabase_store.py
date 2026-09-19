@@ -51,6 +51,7 @@ class SupabaseSignalStore:
         "vkospi", "futures_basis", "watch_blocked_by",
         "sp500_change_pct", "usdkrw_change_pct", "short_interest_ratio", "has_disclosure",
         "disclosure_sentiment", "per", "pbr", "bid_ask_ratio", "execution_strength",
+        "search_rank",
     )
 
     def save_signal(
@@ -73,6 +74,7 @@ class SupabaseSignalStore:
         pbr: Optional[float] = None,
         bid_ask_ratio: Optional[float] = None,
         execution_strength: Optional[float] = None,
+        search_rank: Optional[int] = None,
     ):
         row = {
             "ticker": ticker,
@@ -123,6 +125,10 @@ class SupabaseSignalStore:
         # 마찬가지로 EOD 수급과 다른 실시간 지표, 아직 점수엔 미반영(2026-09-11 추가)
         if execution_strength is not None:
             row["execution_strength"] = execution_strength
+        # 네이버금융 인기검색종목 순위 (2026-09-19 추가) — 완전히 다른 축(대중 관심도)의
+        # 정보성 기록, 위 지표들과 동일 원칙(아직 점수엔 미반영). 순위 밖이면 None(0등이 아님)
+        if search_rank is not None:
+            row["search_rank"] = search_rank
 
         # 위 선택 컬럼들이 아직 마이그레이션 안 됐거나(신규 컬럼) 마이그레이션 직후 PostgREST
         # 스키마 캐시가 아직 안 돌았을 수 있음(2026-09-11 PER/PBR 사례로 실측, CLAUDE.md 참고)
@@ -206,7 +212,7 @@ class SupabaseSignalStore:
     _METADATA_EVAL_COLUMNS = (
         "vkospi, futures_basis, sp500_change_pct, usdkrw_change_pct, "
         "short_interest_ratio, has_disclosure, disclosure_sentiment, watch_blocked_by, "
-        "per, pbr, bid_ask_ratio, execution_strength"
+        "per, pbr, bid_ask_ratio, execution_strength, search_rank"
     )
 
     def get_evaluated_signals(self, since_iso: str) -> list[dict]:
@@ -456,4 +462,27 @@ class SupabaseSignalStore:
             return True
         except Exception as e:
             logger.error(f"투자자 아카이브 저장 실패 [{ticker}]: {e}")
+            return False
+
+    # ── 네이버금융 인기검색종목 일일 아카이빙 (2026-09-19 추가) ──────
+    # 네이버금융 "인기검색종목" 페이지도 투자자 수급과 동일하게 "오늘"의 스냅샷만 제공하고
+    # 과거 이력 API/아카이브가 없어(위 investor archive와 동일한 제약) 지금부터 쌓아야만
+    # 나중에 적중률과의 상관관계를 검증할 수 있다. (ticker, archive_date) unique라 같은 날
+    # 재실행해도 upsert로 안전
+    def upsert_search_popularity_archive(
+        self, ticker: str, name: str, rank: int, archive_date: str,
+    ) -> bool:
+        try:
+            self._client.table("stock_search_popularity_daily_archive").upsert(
+                {
+                    "ticker": ticker,
+                    "name": name,
+                    "rank": rank,
+                    "archive_date": archive_date,
+                },
+                on_conflict="ticker,archive_date",
+            ).execute()
+            return True
+        except Exception as e:
+            logger.error(f"인기검색종목 아카이브 저장 실패 [{ticker}]: {e}")
             return False

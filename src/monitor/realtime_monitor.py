@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src.api.kis_api import KISApi
 from src.api.krx_data import get_short_interest_ratios
 from src.api.dart_api import get_today_disclosures
+from src.api.naver_search import get_popular_search_stocks
 from src.analysis.signal_generator import SignalGenerator, SignalType, TradeSignal
 from src.notification.slack_bot import SlackNotifier
 from src.monitor.virtual_trader import VirtualTrader
@@ -141,6 +142,9 @@ class RealtimeMonitor:
         # 오늘 공시 종목별 상세(DART) — {ticker: {"sentiment":, "titles":}}, DART_API_KEY 없으면
         # 항상 빈 dict, 스캔당 1회 갱신 (2026-08-28 추가, 2026-09-01 호재/악재 분류 추가)
         self._disclosures: dict[str, dict] = {}
+        # 네이버금융 인기검색종목 — {ticker: {"rank":, "name":}}, 조회 실패 시 항상 빈 dict,
+        # 스캔당 1회 갱신 (2026-09-19 추가) — 실검(2021년 폐지)과 다른, 네이버금융 자체 조회순위
+        self._search_popularity: dict[str, dict] = {}
         # 워치리스트 업종 ETF 대비 상대강도 — {ticker: pct_diff}, 스캔당 갱신 (2026-08-28 추가)
         self._sector_rs: dict[str, float] = {}
         # 워치리스트 업종 ETF 벤치마크 일봉 — {etf_ticker: ohlcv}, 스캔당 1회 갱신 (2026-08-28 추가)
@@ -192,6 +196,7 @@ class RealtimeMonitor:
         pbr: Optional[float] = None,
         bid_ask_ratio: Optional[float] = None,
         execution_strength: Optional[float] = None,
+        search_rank: Optional[int] = None,
     ):
         if self._store:
             vkospi_value = self._vkospi["value"] if self._vkospi else None
@@ -211,7 +216,7 @@ class RealtimeMonitor:
                 short_info["ratio"] if short_info else None,
                 disclosure_info is not None,
                 disclosure_info["sentiment"] if disclosure_info else None,
-                per, pbr, bid_ask_ratio, execution_strength,
+                per, pbr, bid_ask_ratio, execution_strength, search_rank,
             )
         else:
             self._last_alert[ticker] = (signal_type.value, datetime.now())
@@ -412,6 +417,7 @@ class RealtimeMonitor:
         is_after_hours: bool = False,
         order_book: Optional[dict] = None,
         execution_strength: Optional[float] = None,
+        search_rank_info: Optional[dict] = None,
     ) -> str:
         emoji = SIGNAL_EMOJI[signal.signal_type]
         ind   = signal.indicators
@@ -468,6 +474,10 @@ class RealtimeMonitor:
             if pbr:
                 val_parts.append(f"PBR {pbr:.1f}배")
             header += f"\n💰 {' · '.join(val_parts)}"
+
+        # 네이버금융 인기검색종목 순위 (2026-09-19 추가) — 아직 신호 점수엔 미반영, 정보성 표시만
+        if search_rank_info:
+            header += f"\n🔥 네이버금융 인기검색 {search_rank_info['rank']}위"
 
         # ── 거래량 ──
         vol        = current_info.get("volume", 0)
@@ -766,6 +776,8 @@ class RealtimeMonitor:
         except Exception as e:
             logger.warning(f"[{ticker}] 체결강도 조회 실패: {e}")
 
+        search_rank_info = self._search_popularity.get(ticker)
+
         msg = self._format_slack_message(
             signal=signal,
             current_info=current_info,
@@ -776,6 +788,7 @@ class RealtimeMonitor:
             is_after_hours=after_hours,
             order_book=order_book,
             execution_strength=execution_strength,
+            search_rank_info=search_rank_info,
         )
 
         self._notifier.send_sync(msg)
@@ -785,6 +798,7 @@ class RealtimeMonitor:
             current_info.get("per"), current_info.get("pbr"),
             order_book.get("bid_ask_ratio") if order_book else None,
             execution_strength,
+            search_rank_info["rank"] if search_rank_info else None,
         )
         logger.info(
             f"[{ticker}] {name} 알림 전송 → {signal.signal_type.value} "
@@ -972,6 +986,14 @@ class RealtimeMonitor:
         except Exception as e:
             logger.warning(f"공시 조회 실패: {e}")
             self._disclosures = {}
+
+        # 네이버금융 인기검색종목 — 스캔 1회당 1번만 조회 (2026-09-19 추가)
+        try:
+            popularity_list = get_popular_search_stocks(limit=50)
+            self._search_popularity = {row["ticker"]: row for row in popularity_list}
+        except Exception as e:
+            logger.warning(f"인기검색종목 조회 실패: {e}")
+            self._search_popularity = {}
 
         # 워치리스트 업종 ETF 벤치마크 — 매핑된 ETF 코드만 스캔 1회당 1번씩 조회 (2026-08-28 추가)
         # 종목 쪽(_analyze_stock)이 오늘 실시간가를 주입받는 것과 동일하게 ETF도 주입해야

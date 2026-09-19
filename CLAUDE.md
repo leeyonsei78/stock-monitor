@@ -876,7 +876,8 @@ C:\test_stock_auto\
 └── src/
     ├── api/kis_api.py       # KIS API 래퍼 (시세는 실서버, 주문은 모의서버)
     │   ├── krx_data.py      # KRX 공매도 비중 조회 (pykrx, 2026-08-28 추가)
-    │   └── dart_api.py      # DART 당일 공시 종목 조회 (2026-08-28 추가)
+    │   ├── dart_api.py      # DART 당일 공시 종목 조회 (2026-08-28 추가)
+    │   └── naver_search.py  # 네이버금융 인기검색종목 조회 (2026-09-19 추가)
     ├── analysis/
     │   ├── technical_indicators.py   # RSI/MACD/볼린저/이평선/분봉모멘텀
     │   ├── investor_analyzer.py      # 외국인/기관/개인/프로그램 분석
@@ -1181,6 +1182,99 @@ VKOSPI/코스피200선물베이시스/S&P500/USD-KRW/공매도비중/공시여�
 - 데이터가 쌓이면 체결강도가 높은(매수우위) 매수 신호가 실제로 적중률이 나은지 `analyze_signal_metadata_correlation.py`로 검증할 것 — 지금은 다른 정보성 지표와 마찬가지로 순수 표시만
 - **1주일치 첫 확인 진단 추가 (2026-09-17, "적중률 높일 방안" 검토 요청으로 재우선순위화)**: 기술적 지표(corr≤0.03)·투자자 수급(정식 공식 재현해도 corr+0.0133)이 전부 무상관으로 확인된 상태에서, 호가잔량/체결강도는 EOD가 아닌 실시간 압력이라 유일하게 안 검증된 축 — `analyze_signal_metadata_correlation.yml`에 `bid_ask_ratio`/`execution_strength`를 각각 자연스러운 중립점(비율 1.0, 체결강도 100)으로 2분할해 적중률을 비교하는 진단 스텝 추가(새 API 호출 없이 이미 저장된 값 재사용, 표본이 작을 걸 감안해 다른 진단처럼 3분위 아닌 2분할만 사용)
   - **첫 실행 결과 (2026-09-17, 평가완료 669건 기준)**: `bid_ask_ratio` 값 있는 신호 46건, `execution_strength` 값 있는 신호 47건 — 15건 기준은 넘겼지만 매수/매도/관심이 섞인 전체 집계일 뿐, 정작 원래 검증 목적("매수/매도 잔량비율이 높은 매수 신호가 실제로 적중률이 나은지")에 필요한 **"매수 신호만" 하위 그룹은 1~6건뿐**이라 사실상 아직 판단 불가 — 전체 집계 수치(매수잔량우위 61% vs 매도잔량우위 28%, 체결강도 매수우위 22% vs 매도우위 71%)는 신호 타입(매수/매도/관심)이 섞여 있어 그대로 해석하면 오도될 위험이 큼(예: 매도 신호가 많이 섞인 그룹은 "하락이 적중"이라 방향이 뒤집혀 보일 수 있음, 위 "1일 vs 3일 지평" 등 다른 진단에서도 타입 분리 없인 해석이 부정확했던 전례 참고) — **결론: 2주 뒤 재확인 권장했던 원래 계획대로 판단 보류 유지, 지금 수치로 방향성을 논하지 않음**
+
+---
+
+## 검색 관심도 정보 추가 (2026-09-19)
+9/18 주간 리포트 검토 후 사용자가 "사람들이 검색하는 순위를 가져와서 매수/매도 타이밍과
+적중률을 높일 수 있는지" 검토를 요청 — 조사 결과 네이버·다음의 "실시간급상승검색어(실검)"는
+2021년 2월 정치적 조작 논란으로 두 회사 모두 전면 폐지해 더 이상 어떤 형태로도 존재하지
+않음(사용자가 떠올린 것이 실검이었다면 애초에 불가능한 요청이었다는 뜻이라 먼저 확인). 대신
+실제로 존재하는 대안 두 가지를 검토해 트레이드오프를 제시:
+| 후보 | 백테스트 가능 여부 | 신뢰도 |
+|---|---|---|
+| Google Trends | ✅ 과거 수년치 즉시 조회 가능 | 비공식 API, 절대비교 불가 |
+| 네이버금융 인기검색종목 | ❌ "오늘"만 제공, 과거 이력 없음 | 국내 투자자 실제 행동 기반 |
+
+"제안 방향으로 가면서 백테스트 가능한지?"로 확인 요청 → AskUserQuestion으로 "Google Trends
+먼저 vs 네이버 아카이빙 먼저 vs 둘 다 동시에" 중 선택받음 — **"둘 다 동시에 진행"**으로 결정,
+아래 두 기능을 병행 구현.
+
+### ① Google Trends 백테스트 (`backtest_google_trends.py`, 신규)
+`backtest_technical_score.py`의 `UNIVERSE`/`load_ohlcv`/`BACKTEST_CALENDAR_DAYS`를 그대로
+재사용(2026-09-17 `collect_rows()` 분리와 동일한 중복 방지 원칙) — 종목별 "회사 한글명"을
+검색 키워드로 `pytrends`(Google 비공식 API)로 2년치 검색 관심도 조회, 5거래일/10거래일 앞
+수익률과 상관분석. **1일 비교는 안 함** — Google Trends는 조회 기간이 269일을 넘으면 자동으로
+주간 단위 데이터만 반환하는 정책이라(일별 아님) 그 주 내내 같은 값이라 1일 비교 자체가
+무의미. 레벨(0~100)과 전주 대비 변화량(`wow_change`, 급증 감지용) 둘 다 각각 상관분석 —
+bb_squeeze 실험(2026-09-14) 때처럼 레벨과 변화량이 다른 의미를 가질 수 있다는 판단
+- **한계 (스크립트 docstring·Slack 출력에도 명시)**:
+  1. 0~100 정규화가 **키워드 자기 자신의 조회 기간 내 최고점 기준**이라 종목 간 절대
+     검색량 비교 불가 — 여러 종목을 풀링해 상관계수 내는 방식이라 이 정규화가 왜곡을
+     일으킬 가능성 있음(이 프로젝트가 이미 경계해온 유형의 리스크)
+  2. `pytrends`는 Google 비공식 API(리버스엔지니어링) — KIS/KRX/DART에서 이미 여러 번 겪은
+     "필드명·정책이 예고 없이 바뀔 수 있음" 리스크가 동일하게 적용됨, 특히 공유 클라우드
+     IP(GitHub Actions 러너)에서 레이트리밋/차단 가능성이 실제 운영 리스크로 있음 —
+     연속 실패가 많으면(레이트리밋 의심) 리포트 자체를 "결과 신뢰 불가"로 중단하는 가드 포함
+- 전용 워크플로우: `.github/workflows/backtest_google_trends.yml` (`workflow_dispatch` 전용, 20분 타임아웃)
+- 합성 데이터(4케이스) 로컬 검증 완료 — 실제 Google Trends 라이브 조회는 이 세션 샌드박스가
+  `trends.google.com`을 차단해(`curl` 403으로 직접 확인) 검증 불가, **배포 후
+  workflow_dispatch로 실제 결과·pytrends 차단 여부 확인 필요**
+
+### ② 네이버금융 인기검색종목 일일 아카이빙 (`src/api/naver_search.py` + `archive_search_popularity.py`, 신규)
+네이버금융 자체 페이지(`finance.naver.com/sise/lastsearch2.naver`)의 종목 페이지 조회수 기반
+순위 — 실검과 성격이 다름(전체 인터넷 검색이 아니라 네이버금융 이용자의 종목 페이지 방문
+순위), API 키 불필요·공개 HTML. **투자자 수급(KIS, 최근 30거래일만 제공)과 동일한 제약**으로
+"오늘"의 스냅샷만 제공하고 과거 이력·API가 없어 백테스트 불가 — `archive_investor_data.py`와
+동일한 방식으로 2026-09-19부터 매일 쌓기 시작, 데이터가 몇 주 쌓인 뒤에야 검증 가능
+- `get_popular_search_stocks(limit=50)`: `requests` + `BeautifulSoup`로 HTML 파싱. 종목코드는
+  테이블 구조와 무관하게 `item/main.naver?code=XXXXXX` 링크의 URL 파라미터에서 정규식으로
+  직접 추출(`_CODE_RE`) — 컬럼 순서 변경에 강하게 만든 설계, 테이블 클래스명(`table.type_5`
+  추정)을 못 찾아도 전체 `tr` 스캔으로 폴백
+- `archive_search_popularity.py`: 조회된 순위 전체(최대 50건)를 무조건 저장 —
+  `archive_investor_data.py`처럼 특정 티커 집합으로 필터링하지 않음(이 데이터 자체가 "그날
+  주목받은 종목"이 무엇인지 알아내는 게 목적이라 워치리스트 종목만 볼 이유가 없음). 휴장일
+  스킵, `SUPABASE_URL`/`SUPABASE_KEY` 없으면 조용히 중단
+- 워크플로우: `.github/workflows/archive_search_popularity.yml` — 평일 15:40 KST(정규장 마감
+  직후) 자동 실행 + `workflow_dispatch`
+- **Slack 정보성 표시 + DB 기록 병행** (다른 모든 신규 지표와 동일 원칙, 아직 신호 점수 미반영):
+  `realtime_monitor.py`가 `_scan_once()`에서 스캔당 1회 조회(`self._search_popularity`)해
+  전 종목이 공유, 알림 발생 종목에 한해 헤더에 `🔥 네이버금융 인기검색 {순위}위` 배지 표시
+  (매핑 없으면 배지 자체 생략). `stock_signal_log.search_rank`(integer)에 기록 —
+  `save_signal()`/`_mark_alerted()`에 기존 per/pbr 등과 동일한 폴백 패턴 적용
+  (`_OPTIONAL_SIGNAL_COLUMNS`/`_METADATA_EVAL_COLUMNS`에 추가, 마이그레이션 전이면 이
+  컬럼만 빼고 재시도)
+- 합성 데이터로 naver_search.py 파싱 5케이스(정상/limit 적용/빈 HTML/네트워크 오류/테이블
+  클래스명 없어도 폴백) + archive_search_popularity.py `main()` 3케이스(휴장일 스킵/정상
+  저장/SUPABASE 미설정 시 중단) + Slack 배지 렌더링 3케이스(표시/None/파라미터 생략) 전부
+  로컬 검증 완료
+
+### 개발 환경 제약 (다른 신규 지표와 동일)
+이 세션 샌드박스는 `finance.naver.com`/`trends.google.com` 둘 다 직접 curl로 403 확인 —
+KIS/DART/KRX와 동일하게 실제 HTML 구조·pytrends 응답을 라이브로 검증하지 못한 채 작성됨.
+**배포 전 반드시 GitHub Actions workflow_dispatch 드라이런으로 실제 파싱 건수·pytrends 차단
+여부 확인할 것** — 0건 파싱 시 원인 구분용 WARNING 로그(HTTP 상태·응답 길이·테이블 발견
+여부)를 이미 심어둠(krx_data.py의 "컬럼 못 찾으면 실제 컬럼 목록 로그" 원칙과 동일).
+
+### Supabase 마이그레이션 (수동 SQL 필요)
+```sql
+alter table stock_signal_log add column search_rank integer;
+
+create table stock_search_popularity_daily_archive (
+  id bigserial primary key,
+  ticker text not null,
+  name text,
+  rank integer not null,
+  archive_date text not null,  -- YYYYMMDD
+  created_at timestamptz not null default now(),
+  unique (ticker, archive_date)
+);
+create index on stock_search_popularity_daily_archive (ticker, archive_date);
+alter table stock_search_popularity_daily_archive disable row level security;
+```
+`save_signal()`이 다른 신규 컬럼들과 동일한 폴백 패턴을 적용해뒀음 — 마이그레이션 전에도
+`search_rank`만 빼고 재시도해 신호 저장(쿨다운의 근간) 자체는 안 깨짐. `archive_search_popularity.py`는
+테이블 자체가 없으면 저장이 전부 실패하므로 이 마이그레이션은 배포 전 실행 필수.
 
 ---
 

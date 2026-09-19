@@ -32,6 +32,16 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
 
+      - name: 임시 진단 - 네이버 실측 파싱 확인 (2026-09-19, 확인 후 제거 예정)
+        run: |
+          .venv/bin/python -c "
+          from src.api.naver_search import get_popular_search_stocks
+          rows = get_popular_search_stocks(limit=10)
+          print(f'파싱 결과 {len(rows)}건')
+          for r in rows:
+              print(r)
+          "
+
       - name: 인기검색종목 아카이빙
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

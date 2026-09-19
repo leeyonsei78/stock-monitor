@@ -32,35 +32,43 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --cache-dir ~/.cache/pip -r requirements.txt
 
-      - name: 임시 진단2 - 네이버 원본 HTML 구조 확인 (2026-09-19, 확인 후 제거 예정)
+      - name: 임시 진단3 - Next.js __NEXT_DATA__ / API 엔드포인트 탐색 (2026-09-19, 확인 후 제거 예정)
         run: |
-          .venv/bin/python -c "
+          cat > /tmp/diag3.py <<'PYEOF'
           import re
           import requests
-          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'}
-          url = 'https://finance.naver.com/sise/lastsearch2.naver'
+
+          headers = {
+              "User-Agent": (
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+              )
+          }
+          url = "https://finance.naver.com/sise/lastsearch2.naver"
           resp = requests.get(url, headers=headers, timeout=10)
           text = resp.text
-          print('status', resp.status_code, 'len', len(text))
-          print('code= count:', text.count('code='))
-          m = re.findall(r'code=(\d{6})', text)
-          print('6digit code matches:', len(m), m[:10])
-          # find any table class names
-          classes = set(re.findall(r'<table[^>]*class=\"([^\"]+)\"', text))
-          print('table classes found:', classes)
-          # title tag
-          t = re.search(r'<title>(.*?)</title>', text, re.S)
-          print('title:', t.group(1).strip() if t else None)
-          # dump a slice around first occurrence of item/main or 'lastsearch' related keyword
-          idx = text.find('item/main.naver')
-          print('item/main.naver idx:', idx)
-          if idx == -1:
-              idx2 = text.find('code=')
-              print('first code= idx:', idx2)
-              print(text[max(0,idx2-200):idx2+200] if idx2 != -1 else text[:1000])
-          else:
-              print(text[max(0,idx-200):idx+200])
-          "
+          print("status", resp.status_code, "len", len(text))
+
+          has_next_data = "__NEXT_DATA__" in text
+          print("__NEXT_DATA__ present:", has_next_data)
+          if has_next_data:
+              idx = text.find("__NEXT_DATA__")
+              print(text[idx:idx + 2000])
+
+          apis = sorted(set(re.findall(r'"(/api/[^"]{0,120})"', text)))
+          print("api paths found:", len(apis))
+          for a in apis[:30]:
+              print(" ", a)
+
+          domain_pattern = re.compile(
+              r"https?://[a-zA-Z0-9_.-]*(?:stock|finance|api)[a-zA-Z0-9_.-]*\.naver\.com[^\" ]{0,80}"
+          )
+          domains = sorted(set(domain_pattern.findall(text)))
+          print("naver api/stock domain refs found:", len(domains))
+          for d in domains[:30]:
+              print(" ", d)
+          PYEOF
+          .venv/bin/python /tmp/diag3.py
 
       - name: 인기검색종목 아카이빙
         env:

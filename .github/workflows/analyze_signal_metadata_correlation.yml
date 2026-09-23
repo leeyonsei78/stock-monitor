@@ -1179,4 +1179,3 @@ jobs:
                   except Exception as e:
                       print(f"[검정] 실패: {e}")
           PY
-          PY

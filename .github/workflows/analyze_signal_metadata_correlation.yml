@@ -1061,4 +1061,122 @@ jobs:
 
           if len(bar_rows) < 15 and len(es_rows) < 15:
               print("[결론] 표본이 너무 작아(15건 미만) 판단 보류 — 2주 정도 더 쌓인 뒤 재확인 권장")
+
+      - name: (진단용, Slack 미전송) 가상매매 누적 흑자 전환이 시장 드리프트인지 확인 — 코스피 대비 초과수익률
+        # 2026-09-23: 사용자가 "가상매매 3주 연속 개선이 장이 좋아서인지 로직이 타이밍을 잡은
+        # 것인지" 질의 — 지금까지 가상매매 수익률은 전부 원시(raw) 수익률만 봤고, backtest_trading_rules.py가
+        # 2026-09-14에 이미 겪은 "원시수익률 개선이 실은 시장 전체 드리프트였다(p=0.324로 무의미)"는
+        # 것과 동일한 함정을 아직 점검 안 함. stock_virtual_position은 entry_at/exit_at이 정확한
+        # 타임스탬프로 있어(신호처럼 "h거래일 후"를 추정할 필요 없음) 각 거래의 보유기간 그대로
+        # 코스피(KS11) 수익률을 계산해 raw - kospi = excess로 직접 비교. KS11은 전체 대상 거래의
+        # 날짜범위로 한 번만 조회해 공유(종목별 재조회 없음, 다른 진단과 동일 원칙)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from collections import defaultdict
+          from datetime import datetime, timedelta, date
+          from zoneinfo import ZoneInfo
+          from src.monitor.supabase_store import SupabaseSignalStore
+          import FinanceDataReader as fdr
+
+          KST = ZoneInfo("Asia/Seoul")
+
+          def week_start(d: date) -> date:
+              return d - timedelta(days=d.weekday())
+
+          store = SupabaseSignalStore(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          since_iso = "2026-08-01T00:00:00+00:00"
+          rows = store.get_closed_virtual_positions(since_iso)
+          print(f"[진단] 청산 완료 가상매매 {len(rows)}건(2026-08-01 이후) — 코스피 대비 초과수익률 계산")
+
+          parsed = []
+          for r in rows:
+              try:
+                  entry_kst = datetime.fromisoformat(r["entry_at"].replace("Z", "+00:00")).astimezone(KST).date()
+                  exit_kst = datetime.fromisoformat(r["exit_at"].replace("Z", "+00:00")).astimezone(KST).date()
+              except Exception:
+                  continue
+              if r.get("return_pct") is None:
+                  continue
+              r["_entry_date"] = entry_kst
+              r["_exit_date"] = exit_kst
+              parsed.append(r)
+
+          if not parsed:
+              print("[진단] 파싱 가능한 청산 거래 없음 — 종료")
+          else:
+              d_min = min(r["_entry_date"] for r in parsed)
+              d_max = max(r["_exit_date"] for r in parsed)
+              kdf = fdr.DataReader("KS11", start=d_min - timedelta(days=10), end=d_max + timedelta(days=3))
+              kdf.index = kdf.index.date
+              kospi_dates = sorted(kdf.index)
+              kospi_close = {d: float(kdf.loc[d, "Close"]) for d in kospi_dates}
+
+              def nearest_close_on_or_before(d):
+                  cand = [kd for kd in kospi_dates if kd <= d]
+                  return kospi_close[cand[-1]] if cand else None
+
+              kospi_total_return = None
+              if kospi_dates:
+                  kospi_total_return = (kospi_close[kospi_dates[-1]] - kospi_close[kospi_dates[0]]) / kospi_close[kospi_dates[0]] * 100
+                  print(f"[진단] 코스피(KS11) {kospi_dates[0]}~{kospi_dates[-1]} 기간 수익률: {kospi_total_return:+.2f}% (전체 시장 방향 참고용)")
+
+              missing = 0
+              for r in parsed:
+                  p0 = nearest_close_on_or_before(r["_entry_date"])
+                  p1 = nearest_close_on_or_before(r["_exit_date"])
+                  if p0 is None or p1 is None or p0 == 0:
+                      missing += 1
+                      continue
+                  kospi_ret = (p1 - p0) / p0 * 100
+                  r["_kospi_return_pct"] = kospi_ret
+                  r["_excess_return_pct"] = r["return_pct"] - kospi_ret
+              print(f"[진단] 코스피 매칭 실패(거래일 없음) {missing}건 제외")
+
+              matched = [r for r in parsed if r.get("_excess_return_pct") is not None]
+
+              by_week = defaultdict(list)
+              for r in matched:
+                  by_week[week_start(r["_exit_date"])].append(r)
+
+              print("\n[결과] 주차별 원시 vs 초과수익률(vs코스피, exit_at 기준 주 단위)")
+              for wk in sorted(by_week):
+                  wrows = by_week[wk]
+                  n = len(wrows)
+                  avg_raw = sum(r["return_pct"] for r in wrows) / n
+                  avg_kospi = sum(r["_kospi_return_pct"] for r in wrows) / n
+                  avg_excess = sum(r["_excess_return_pct"] for r in wrows) / n
+                  print(
+                      f"  {wk.strftime('%m/%d')}주 ({n}건) — 원시 평균 {avg_raw:+.2f}% | "
+                      f"코스피 평균(보유기간 매칭) {avg_kospi:+.2f}% | 초과수익률 평균 {avg_excess:+.2f}%"
+                  )
+
+              if matched:
+                  n = len(matched)
+                  avg_raw = sum(r["return_pct"] for r in matched) / n
+                  avg_kospi = sum(r["_kospi_return_pct"] for r in matched) / n
+                  avg_excess = sum(r["_excess_return_pct"] for r in matched) / n
+                  print(f"\n[결과] 누적({n}건) — 원시 평균 {avg_raw:+.2f}% | 코스피 평균 {avg_kospi:+.2f}% | 초과수익률 평균 {avg_excess:+.2f}%")
+
+                  try:
+                      from scipy import stats
+                      excess_vals = [r["_excess_return_pct"] for r in matched]
+                      if len(excess_vals) >= 2:
+                          t, p = stats.ttest_1samp(excess_vals, 0)
+                          print(f"[검정] 누적 초과수익률 평균이 0과 다른가: p={p:.3f}")
+                      recent = [r for r in matched if r["_exit_date"] >= date(2026, 9, 7)]
+                      if len(recent) >= 2:
+                          rt, rp = stats.ttest_1samp([r["_excess_return_pct"] for r in recent], 0)
+                          avg_recent_excess = sum(r["_excess_return_pct"] for r in recent) / len(recent)
+                          avg_recent_raw = sum(r["return_pct"] for r in recent) / len(recent)
+                          print(
+                              f"[검정] 09/07주 이후({len(recent)}건, '3주 연속 개선' 구간) 초과수익률 평균 "
+                              f"{avg_recent_excess:+.2f}%(원시 {avg_recent_raw:+.2f}%)가 0과 다른가: p={rp:.3f}"
+                          )
+                  except Exception as e:
+                      print(f"[검정] 실패: {e}")
+          PY
           PY

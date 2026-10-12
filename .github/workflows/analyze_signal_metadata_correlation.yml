@@ -374,6 +374,18 @@ jobs:
                   print(f"  {label}: n={len(sp)}, 평균 stop_pct {sum(sp)/len(sp):+.2f}%, 평균 target_pct {sum(tp)/len(tp):+.2f}%")
               else:
                   print(f"  {label}: stop_pct/target_pct 데이터 없음(컬럼 미조회 또는 비어있음)")
+
+          print("\n[6b] stop_pct/target_pct가 ATR 클램프 경계(stop_loss_min_pct=-6.0 / take_profit_max_pct=10.0)에 걸려있는 비율 — 전체 열린 포지션 기준 (clamp이 사실상 고정폭으로 동작하는지 확인)")
+          all_sp = [r.get("stop_pct") for r in rows if r.get("stop_pct") is not None]
+          all_tp = [r.get("target_pct") for r in rows if r.get("target_pct") is not None]
+          if all_sp and all_tp:
+              EPS = 0.05
+              sp_at_floor = sum(1 for v in all_sp if abs(v - (-6.0)) < EPS)
+              tp_at_ceiling = sum(1 for v in all_tp if abs(v - 10.0) < EPS)
+              print(f"  stop_pct: n={len(all_sp)}, 최소 {min(all_sp):+.2f}%, 최대 {max(all_sp):+.2f}%, 평균 {sum(all_sp)/len(all_sp):+.2f}%, stop_loss_min_pct(-6.0) 경계에 걸린 건 {sp_at_floor}건({sp_at_floor/len(all_sp)*100:.0f}%)")
+              print(f"  target_pct: n={len(all_tp)}, 최소 {min(all_tp):+.2f}%, 최대 {max(all_tp):+.2f}%, 평균 {sum(all_tp)/len(all_tp):+.2f}%, take_profit_max_pct(10.0) 경계에 걸린 건 {tp_at_ceiling}건({tp_at_ceiling/len(all_tp)*100:.0f}%)")
+          else:
+              print("  데이터 없음")
           PY
 
       - name: (진단용, Slack 미전송) 같은 방향 반복 알림 vs 전환/최초 알림 적중률

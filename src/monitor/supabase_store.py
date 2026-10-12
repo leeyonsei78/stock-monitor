@@ -15,6 +15,11 @@ logger = setup_logger("supabase_store")
 # (2026-09-11 PER/PBR 마이그레이션 직후 실제 관측된 형식, save_signal() 폴백에서 재사용)
 _MISSING_COLUMN_RE = re.compile(r"Could not find the '(\w+)' column")
 
+# SELECT 시 컬럼이 테이블에 아예 없을 때(42703, 마이그레이션 자체가 안 된 경우)의 오류 형식 — 예:
+# "column stock_signal_log.search_rank does not exist" (2026-10-12 실측, get_evaluated_signals()
+# 폴백에서 재사용). 위 _MISSING_COLUMN_RE(INSERT용 PGRST204)와는 메시지 형식이 달라 별도 패턴 필요
+_MISSING_SELECT_COLUMN_RE = re.compile(r"column \w+\.(\w+) does not exist")
+
 
 class SupabaseSignalStore:
     def __init__(self, url: str, key: str, cooldown_sec: int = 1800):
@@ -218,32 +223,47 @@ class SupabaseSignalStore:
     def get_evaluated_signals(self, since_iso: str) -> list[dict]:
         """1일차 평가가 완료된 신호 전체 조회 (주간 추이 리포트/신규 지표 상관관계 분석 공용).
         확장 컬럼(_METADATA_EVAL_COLUMNS) 포함 조회가 실패하면(마이그레이션 전 환경 등)
-        기본 컬럼만으로 재시도 — save_signal()의 insert 폴백과 동일한 원칙(2026-09-01 추가)."""
-        try:
-            result = (
-                self._client.table("stock_signal_log")
-                .select(f"{self._BASE_EVAL_COLUMNS}, {self._METADATA_EVAL_COLUMNS}")
-                .not_.is_("return_1d_pct", "null")
-                .gte("alerted_at", since_iso)
-                .order("alerted_at")
-                .execute()
-            )
-            return result.data or []
-        except Exception as e:
-            logger.warning(f"확장 컬럼 포함 조회 실패({e}) — 기본 컬럼만으로 재시도")
+        기본 컬럼만으로 재시도 — save_signal()의 insert 폴백과 동일한 원칙(2026-09-01 추가).
+
+        2026-10-12 컬럼 단위로 정밀화(save_signal()의 2026-09-17 수정과 동일한 이유) — 기존엔
+        확장 컬럼 중 단 하나라도 없으면(예: search_rank 마이그레이션 누락) 전부를 한 번에
+        스트립하는 전부-아니면-전무 폴백이라, 그 한 컬럼 때문에 나머지 11개 정상 메타데이터
+        컬럼(vkospi/futures_basis/per/pbr/bid_ask_ratio/execution_strength/watch_blocked_by 등)
+        까지 매번 조용히 다 같이 빠져서, 이 메타데이터를 쓰는 모든 상관관계 분석이 실제로는
+        빈 값으로 돌고 있었음 — 실측: search_rank 컬럼이 실제로 마이그레이션 안 된 상태라
+        "column stock_signal_log.search_rank does not exist"(42703) 오류가 매번 발생, 그 결과
+        bid_ask_ratio/execution_strength 등 멀쩡한 컬럼들도 전부 None으로 조회됨. SELECT 오류
+        형식은 INSERT(PGRST204, _MISSING_COLUMN_RE)와 달라 별도 정규식(_MISSING_SELECT_COLUMN_RE)
+        사용, 원인 컬럼을 특정하면 그 컬럼 하나만 빼고 재시도(최대 메타 컬럼 수만큼 반복)."""
+        meta_cols = self._METADATA_EVAL_COLUMNS.split(", ")
+        attempts_left = len(meta_cols) + 1
+        while attempts_left > 0:
+            attempts_left -= 1
+            select_cols = f"{self._BASE_EVAL_COLUMNS}, {', '.join(meta_cols)}" if meta_cols else self._BASE_EVAL_COLUMNS
             try:
                 result = (
                     self._client.table("stock_signal_log")
-                    .select(self._BASE_EVAL_COLUMNS)
+                    .select(select_cols)
                     .not_.is_("return_1d_pct", "null")
                     .gte("alerted_at", since_iso)
                     .order("alerted_at")
                     .execute()
                 )
                 return result.data or []
-            except Exception as e2:
-                logger.error(f"신호 평가 완료 목록 조회 실패: {e2}")
+            except Exception as e:
+                m = _MISSING_SELECT_COLUMN_RE.search(str(e))
+                col = m.group(1) if m else None
+                if col and col in meta_cols:
+                    meta_cols.remove(col)
+                    logger.warning(f"'{col}' 컬럼 조회 실패({e}) — 그 컬럼만 제외하고 재시도")
+                    continue
+                if meta_cols:
+                    logger.warning(f"확장 컬럼 포함 조회 실패({e}) — 원인 컬럼 특정 불가, 기본 컬럼만으로 재시도")
+                    meta_cols = []
+                    continue
+                logger.error(f"신호 평가 완료 목록 조회 실패: {e}")
                 return []
+        return []
 
     def update_signal_evaluation(self, row_id: int, fields: dict):
         try:

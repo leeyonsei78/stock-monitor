@@ -7,7 +7,11 @@ on:
 jobs:
   correlation-analysis:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # 2026-09-11: 투자자 수급 아카이브 진단 추가로 스텝이 늘어 10→15분
+    timeout-minutes: 40  # 2026-09-11: 투자자 수급 아카이브 진단 추가로 10→15분
+                          # 2026-10-15: 투자자 수급 진단 2건의 PostgREST 1000행 cap 버그를 고치면서
+                          # 종목 유니버스가 수십→수백 개로 늘어 FDR 조회량이 커짐 — 15분으로는 이
+                          # 워크플로우 전체(22개 진단 스텝)가 중간에 cancelled 처리되는 걸 실측으로
+                          # 확인해 40분으로 상향
 
     steps:
       - name: 코드 체크아웃

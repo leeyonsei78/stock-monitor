@@ -753,15 +753,25 @@ jobs:
           import FinanceDataReader as fdr
 
           client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-          result = (
-              client.table("stock_investor_daily_archive")
-              .select("ticker,archive_date,foreign_qty,institution_qty")
-              .order("ticker")
-              .order("archive_date")
-              .execute()
-          )
-          rows = result.data or []
-          print(f"[진단] 투자자 수급 아카이브 {len(rows)}건(2026-08-25부터 수집) — 외국인/기관 순매수·순매도별 익일 수익률")
+          # PostgREST 기본 max-rows(1000)에 묶여 단발 .execute()는 테이블 전체를 못 가져옴 — 아래
+          # "실제 가중공식 재현" 스텝에서 2026-10-15에 발견한 것과 동일한 버그, 여기도 동일하게 수정
+          rows = []
+          PAGE = 1000
+          offset = 0
+          while True:
+              page = (
+                  client.table("stock_investor_daily_archive")
+                  .select("ticker,archive_date,foreign_qty,institution_qty")
+                  .order("ticker")
+                  .order("archive_date")
+                  .range(offset, offset + PAGE - 1)
+                  .execute()
+              ).data or []
+              rows.extend(page)
+              if len(page) < PAGE:
+                  break
+              offset += PAGE
+          print(f"[진단] 투자자 수급 아카이브 {len(rows)}건(2026-08-25부터 수집, 페이지네이션 적용) — 외국인/기관 순매수·순매도별 익일 수익률")
 
           by_ticker = defaultdict(list)
           for r in rows:
@@ -850,15 +860,28 @@ jobs:
 
           analyzer = InvestorAnalyzer()
           client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-          result = (
-              client.table("stock_investor_daily_archive")
-              .select("ticker,archive_date,foreign_qty,institution_qty,individual_qty,program_qty")
-              .order("ticker")
-              .order("archive_date")
-              .execute()
-          )
-          rows = result.data or []
-          print(f"[진단] 투자자 수급 아카이브 {len(rows)}건 — 실제 가중공식(InvestorAnalyzer) 재현 백테스트")
+          # PostgREST 기본 max-rows(보통 1000)에 묶여 .execute() 단발 호출은 테이블 전체를 못 가져옴 —
+          # order("ticker")가 1순위라 알파벳(숫자코드) 앞쪽 종목만 전부 채워지고 뒤쪽 종목은 통째로
+          # 누락되는 심한 편향이 생김(2026-10-15 발견, 이 쿼리가 2026-09-14 최초 작성 이후 계속
+          # 이 상태였던 것으로 추정 — n이 두 시점 모두 989/996으로 거의 동일했던 게 단서).
+          # .range()로 페이지네이션해 전체 로우를 가져오도록 수정
+          rows = []
+          PAGE = 1000
+          offset = 0
+          while True:
+              page = (
+                  client.table("stock_investor_daily_archive")
+                  .select("ticker,archive_date,foreign_qty,institution_qty,individual_qty,program_qty")
+                  .order("ticker")
+                  .order("archive_date")
+                  .range(offset, offset + PAGE - 1)
+                  .execute()
+              ).data or []
+              rows.extend(page)
+              if len(page) < PAGE:
+                  break
+              offset += PAGE
+          print(f"[진단] 투자자 수급 아카이브 {len(rows)}건(페이지네이션 적용) — 실제 가중공식(InvestorAnalyzer) 재현 백테스트")
 
           by_ticker = defaultdict(list)
           for r in rows:

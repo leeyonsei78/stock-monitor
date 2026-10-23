@@ -234,22 +234,40 @@ class SupabaseSignalStore:
         "column stock_signal_log.search_rank does not exist"(42703) 오류가 매번 발생, 그 결과
         bid_ask_ratio/execution_strength 등 멀쩡한 컬럼들도 전부 None으로 조회됨. SELECT 오류
         형식은 INSERT(PGRST204, _MISSING_COLUMN_RE)와 달라 별도 정규식(_MISSING_SELECT_COLUMN_RE)
-        사용, 원인 컬럼을 특정하면 그 컬럼 하나만 빼고 재시도(최대 메타 컬럼 수만큼 반복)."""
+        사용, 원인 컬럼을 특정하면 그 컬럼 하나만 빼고 재시도(최대 메타 컬럼 수만큼 반복).
+
+        2026-10-23 PostgREST 1000행 cap 페이지네이션 추가 — 2026-10-15 투자자 수급 아카이브
+        진단 쿼리에서 발견한 것과 동일한 버그가 여기에도 있었음(단발 .execute()로 PostgREST
+        기본 max-rows 1000에 묶임). `order("alerted_at")` 오름차순 + cap이라 총 평가완료
+        건수가 1000을 넘으면 항상 가장 오래된 1000건만 반환되고 그 이후 신규 신호는 영구히
+        누락됨 — 실측: 2026-10-16/10-23 두 주간 리포트의 누적 수치(매수 52/116·매도
+        226/445·관심 179/439, 합계 정확히 1000건)가 바이트 단위로 동일해 발견. 10/19주 이후
+        신호가 약 1주일째 이 경로를 쓰는 모든 분석(주간 리포트, analyze_signal_metadata_
+        correlation.py)에서 조용히 빠지고 있었음 — `.range()` 페이지네이션 루프로 수정."""
         meta_cols = self._METADATA_EVAL_COLUMNS.split(", ")
         attempts_left = len(meta_cols) + 1
         while attempts_left > 0:
             attempts_left -= 1
             select_cols = f"{self._BASE_EVAL_COLUMNS}, {', '.join(meta_cols)}" if meta_cols else self._BASE_EVAL_COLUMNS
             try:
-                result = (
-                    self._client.table("stock_signal_log")
-                    .select(select_cols)
-                    .not_.is_("return_1d_pct", "null")
-                    .gte("alerted_at", since_iso)
-                    .order("alerted_at")
-                    .execute()
-                )
-                return result.data or []
+                rows: list[dict] = []
+                page_size = 1000
+                offset = 0
+                while True:
+                    page = (
+                        self._client.table("stock_signal_log")
+                        .select(select_cols)
+                        .not_.is_("return_1d_pct", "null")
+                        .gte("alerted_at", since_iso)
+                        .order("alerted_at")
+                        .range(offset, offset + page_size - 1)
+                        .execute()
+                    ).data or []
+                    rows.extend(page)
+                    if len(page) < page_size:
+                        break
+                    offset += page_size
+                return rows
             except Exception as e:
                 m = _MISSING_SELECT_COLUMN_RE.search(str(e))
                 col = m.group(1) if m else None
@@ -386,33 +404,42 @@ class SupabaseSignalStore:
         is_stale_entry/watch_blocked_by는 마이그레이션 전이면 select 자체가 실패할 수 있어(insert와
         달리 select는 컬럼 존재 여부와 무관하게 부분 실패가 안 됨) 먼저 포함해서 시도하고, 실패하면
         둘 다 빼고 재시도 — 마이그레이션 전에도 기존 리포트가 깨지지 않도록 함 (2026-08-25)
-        """
+
+        2026-10-23 PostgREST 1000행 cap 페이지네이션 추가 — get_evaluated_signals()에서 실제로
+        터진 것과 동일한 버그가 여기도 단발 .execute()라 잠재돼 있었음. 가상매매 청산 건수는
+        아직 316건(<1000)이라 아직 발현은 안 됐지만, 계속 쌓이면 똑같이 가장 오래된 1000건에서
+        멈추고 신규 청산이 조용히 누락될 것이라 선제 수정."""
         base_cols = (
             "id, ticker, name, signal_type, entry_price, entry_at, "
             "exit_price, exit_at, exit_reason, return_pct, hold_days, expected_return_pct"
         )
+
+        def _paginated(select_cols: str) -> list[dict]:
+            rows: list[dict] = []
+            page_size = 1000
+            offset = 0
+            while True:
+                page = (
+                    self._client.table("stock_virtual_position")
+                    .select(select_cols)
+                    .eq("status", "closed")
+                    .gte("exit_at", since_iso)
+                    .order("exit_at")
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                ).data or []
+                rows.extend(page)
+                if len(page) < page_size:
+                    break
+                offset += page_size
+            return rows
+
         try:
-            result = (
-                self._client.table("stock_virtual_position")
-                .select(base_cols + ", is_stale_entry, watch_blocked_by")
-                .eq("status", "closed")
-                .gte("exit_at", since_iso)
-                .order("exit_at")
-                .execute()
-            )
-            return result.data or []
+            return _paginated(base_cols + ", is_stale_entry, watch_blocked_by")
         except Exception:
             pass
         try:
-            result = (
-                self._client.table("stock_virtual_position")
-                .select(base_cols)
-                .eq("status", "closed")
-                .gte("exit_at", since_iso)
-                .order("exit_at")
-                .execute()
-            )
-            return result.data or []
+            return _paginated(base_cols)
         except Exception as e:
             logger.error(f"청산 완료 가상 포지션 조회 실패: {e}")
             return []

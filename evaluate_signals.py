@@ -6,7 +6,7 @@ GitHub Actions에서 매일 장마감 후 1회 실행.
 """
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import holidays as kr_cal
 from dotenv import load_dotenv
@@ -33,18 +33,36 @@ def is_market_day(d) -> bool:
     return d not in kr_cal.KR(years=d.year)
 
 
-def trading_days_since(alerted_at_utc: datetime, now_utc: datetime) -> int:
-    """KST 거래일 기준 경과일수 (주말·공휴일 제외)"""
-    start = alerted_at_utc.astimezone(KST).date()
-    end = now_utc.astimezone(KST).date()
-    kr_holidays = kr_cal.KR(years=list(range(start.year, end.year + 1)))
+def trading_day_offset(start_date: date, n: int, kr_holidays) -> date:
+    """start_date로부터 정확히 n거래일 뒤 날짜 (주말·공휴일 제외)"""
+    d = start_date
     count = 0
-    d = start
-    while d < end:
+    while count < n:
         d += timedelta(days=1)
         if d.weekday() < 5 and d not in kr_holidays:
             count += 1
-    return count
+    return d
+
+
+def resolve_price(api: "KISApi", ticker: str, target_date: date, today_date: date, past_ohlcv: dict) -> int | None:
+    """target_date의 종가를 가져온다 — 평가 시점(스크립트 실행일)이 아니라 1거래일/3거래일
+    뒤의 실제 목표 날짜를 기준으로 가격을 재구성한다 (2026-10-30 수정).
+
+    과거엔 1일차/3일차 둘 다 같은 "현재가(현재 조회 시점)"를 저장했기 때문에, 평가 작업이
+    밀려 한 번에 여러 거래일이 지나버리면(예: 1~3거래일이 동시에 경과) 1일차와 3일차에
+    완전히 같은 가격·수익률이 들어가는 문제가 있었음 — 이제 과거 목표일이면 그 날짜의
+    FDR 일봉 종가, 오늘이 목표일이면(FDR 당일 데이터 지연을 보완하기 위해 그대로) 실시간
+    현재가를 쓴다."""
+    if target_date < today_date:
+        close = past_ohlcv.get(target_date.strftime("%Y%m%d"))
+        if close is None:
+            logger.warning(f"[{ticker}] {target_date} 종가 데이터 없음 — 이번 평가는 보류, 다음 실행에서 재시도")
+        return close
+    try:
+        return api.get_current_price(ticker, market="J")["price"]
+    except Exception as e:
+        logger.error(f"[{ticker}] 현재가 조회 실패: {e}")
+        return None
 
 
 def is_hit(signal_type: str, return_pct: float) -> bool:
@@ -74,17 +92,21 @@ def main():
     pending = store.get_signals_pending_evaluation(since_iso)
     logger.info(f"평가 대상 후보 {len(pending)}건 조회")
 
-    now_utc = datetime.now(timezone.utc)
+    today_kst_date = now_kst.date()
     evaluated_1d, evaluated_3d = [], []
 
     for row in pending:
         alerted_at = datetime.fromisoformat(row["alerted_at"].replace("Z", "+00:00"))
         if alerted_at.tzinfo is None:
             alerted_at = alerted_at.replace(tzinfo=timezone.utc)
-        days = trading_days_since(alerted_at, now_utc)
+        alerted_date_kst = alerted_at.astimezone(KST).date()
 
-        need_1d = days >= 1 and row.get("price_after_1d") is None
-        need_3d = days >= 3 and row.get("price_after_3d") is None
+        kr_holidays = kr_cal.KR(years=list(range(alerted_date_kst.year, today_kst_date.year + 1)))
+        target_1d = trading_day_offset(alerted_date_kst, 1, kr_holidays)
+        target_3d = trading_day_offset(alerted_date_kst, 3, kr_holidays)
+
+        need_1d = today_kst_date >= target_1d and row.get("price_after_1d") is None
+        need_3d = today_kst_date >= target_3d and row.get("price_after_3d") is None
         if not (need_1d or need_3d):
             continue
 
@@ -92,25 +114,33 @@ def main():
         if not entry_price:
             continue
 
-        try:
-            cur = api.get_current_price(row["ticker"], market="J")
-        except Exception as e:
-            logger.error(f"[{row['ticker']}] 현재가 조회 실패: {e}")
-            continue
+        # 1일차/3일차가 서로 다른 과거 날짜를 가리킬 때 일봉을 한 번만 받아 재사용
+        past_ohlcv: dict = {}
+        if (need_1d and target_1d < today_kst_date) or (need_3d and target_3d < today_kst_date):
+            try:
+                past_ohlcv = {bar["date"]: bar["close"] for bar in api.get_daily_ohlcv(row["ticker"], period=10)}
+            except Exception as e:
+                logger.error(f"[{row['ticker']}] 일봉 조회 실패: {e}")
 
-        return_pct = round((cur["price"] - entry_price) / entry_price * 100, 2)
         fields = {}
         if need_1d:
-            fields["price_after_1d"] = cur["price"]
-            fields["return_1d_pct"] = return_pct
-            evaluated_1d.append({**row, "return_pct": return_pct})
+            price_1d = resolve_price(api, row["ticker"], target_1d, today_kst_date, past_ohlcv)
+            if price_1d:
+                return_1d_pct = round((price_1d - entry_price) / entry_price * 100, 2)
+                fields["price_after_1d"] = price_1d
+                fields["return_1d_pct"] = return_1d_pct
+                evaluated_1d.append({**row, "return_pct": return_1d_pct})
         if need_3d:
-            fields["price_after_3d"] = cur["price"]
-            fields["return_3d_pct"] = return_pct
-            evaluated_3d.append({**row, "return_pct": return_pct})
+            price_3d = resolve_price(api, row["ticker"], target_3d, today_kst_date, past_ohlcv)
+            if price_3d:
+                return_3d_pct = round((price_3d - entry_price) / entry_price * 100, 2)
+                fields["price_after_3d"] = price_3d
+                fields["return_3d_pct"] = return_3d_pct
+                evaluated_3d.append({**row, "return_pct": return_3d_pct})
 
-        store.update_signal_evaluation(row["id"], fields)
-        logger.info(f"[{row['ticker']}] {row['signal_type']} 평가 완료 — {return_pct:+.2f}%")
+        if fields:
+            store.update_signal_evaluation(row["id"], fields)
+            logger.info(f"[{row['ticker']}] {row['signal_type']} 평가 완료 — {fields}")
 
     _send_summary(evaluated_1d, evaluated_3d)
 

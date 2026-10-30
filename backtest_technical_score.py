@@ -126,6 +126,11 @@ def collect_rows() -> pd.DataFrame:
             ind = result.get("indicators", {})
             rows.append({
                 "ticker": code, "name": name, "date": date_i, "score": score, **fwd,
+                # fwd_3d 라벨이 참조하는 실제 미래 날짜(entry+3거래일) — len(fwd)<3으로 이미
+                # i+3<len(records)가 보장된 지점이라 항상 유효함. ML 실험(backtest_ml_technical_score.py)
+                # 의 시간순 train/test 분할이 이 날짜로 학습 구간의 미래참조(leakage)를 걸러냄
+                # (2026-10-30 추가) — 이 스크립트 자체의 상관계수 분석엔 영향 없음(참고용 컬럼)
+                "fwd_3d_end_date": records[i + 3]["date"],
                 **{f"sig_{k}": v for k, v in sig.items()},
                 "ind_atr_pct": ind.get("atr_pct"),
                 "ind_bb_width_pct": ind.get("bb_width_pct"),

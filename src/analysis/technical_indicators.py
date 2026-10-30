@@ -33,8 +33,17 @@ class TechnicalIndicators:
         loss = -delta.clip(upper=0)
         avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
         avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-        rs = avg_gain / avg_loss.replace(0, np.inf)
-        return 100 - (100 / (1 + rs))
+        # avg_loss==0(무손실 구간)일 때 과거엔 분모를 inf로 바꿔 RS=0→RSI=0이 나왔음 — 실제로는
+        # RS가 무한대에 가까워 RSI는 100에 가까워야 하는 정반대 결과였던 버그 (2026-10-30 발견·수정).
+        # avg_loss를 그대로 둬 avg_gain>0/avg_loss=0이면 RS=inf→RSI=100이 자연히 나오게 하고,
+        # avg_gain=0/avg_loss=0(완전 횡보)인 0/0만 중립 50으로 별도 처리. min_periods 미달로
+        # avg_loss가 NaN인 초기 구간은 0이 아니라 NaN이라 아래 분기에 안 걸려 NaN이 그대로 유지됨
+        # (초기 계산 불가 구간을 "데이터 있음"으로 둔갑시키지 않기 위해 의도적으로 유지).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+        flat = (avg_gain == 0) & (avg_loss == 0)
+        return rsi.where(~flat, 50.0)
 
     def rsi_signal(self, rsi: float) -> float:
         """RSI 기반 매매 신호 (-1 ~ +1)"""
@@ -180,9 +189,16 @@ class TechnicalIndicators:
 
         # 평균 대신 중앙값 사용: 최근 급락 구간의 이상 거래량이 평균을 왜곡해
         # 반등일 정상 거래량까지 "평균 미달"로 판정하는 문제 완화 (2026-08-21)
-        vol_ma = df["volume"].rolling(ma_period).median()
+        # 기준선 자기오염 수정 (2026-10-30): 장중엔 마지막 행이 오늘의 "아직 다 안 쌓인"
+        # 누적 거래량(_inject_today_row)인데, 과거엔 이 행까지 포함해 중앙값을 계산해서
+        # 오늘 거래량이 그 자신과 비교할 기준선 자체를 끌어내리고 있었음. 기준선은 오늘
+        # 이전(완결된 거래일)만으로 계산하고, 오늘 행은 비교 대상(current_vol)으로만 사용.
+        # 다만 "장중 누적치 vs 완결된 하루 전체"를 비교하는 구조 자체의 시간대 편향(오전엔
+        # 불리, 오후엔 유리)은 분봉 아카이브 없이는 못 없앰 — 이 수정은 기준선 오염만 제거함
+        baseline = df["volume"].iloc[:-1].rolling(ma_period).median()
+        vol_ma_last = baseline.iloc[-1] if len(baseline) else float("nan")
         current_vol = df["volume"].iloc[-1]
-        vol_ratio = current_vol / vol_ma.iloc[-1] if vol_ma.iloc[-1] > 0 else 1.0
+        vol_ratio = current_vol / vol_ma_last if vol_ma_last > 0 else 1.0
 
         # 가격 상승 + 거래량 증가 = 강한 상승 추세
         price_up = df["close"].iloc[-1] > df["close"].iloc[-2]

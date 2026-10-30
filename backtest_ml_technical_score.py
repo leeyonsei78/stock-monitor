@@ -60,11 +60,18 @@ TRAIN_FRACTION = 0.7  # 날짜 기준 앞 70%=학습, 뒤 30%=테스트
 
 
 def chronological_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """날짜 기준 시간순 분할 + 라벨 누수(leakage) purge (2026-10-30 추가).
+    fwd_3d 라벨은 entry+3거래일 가격을 참조하므로, 학습 구간 마지막 날짜들의 라벨은
+    테스트 구간 가격을 미리 들여다보는 셈 — 라벨 종료일(fwd_3d_end_date)이 테스트
+    시작일(cut_date) 이전인 표본만 학습에 남기는 purge를 추가. 테스트셋은 영향 없음
+    (미래 가격을 보는 게 평가 자체의 목적이라 leakage가 아님)."""
     dates = sorted(df["date"].unique())
     cut_idx = int(len(dates) * TRAIN_FRACTION)
     cut_date = dates[cut_idx]
     train = df[df["date"] < cut_date]
     test = df[df["date"] >= cut_date]
+    if "fwd_3d_end_date" in train.columns:
+        train = train[train["fwd_3d_end_date"] < cut_date]
     return train, test
 
 

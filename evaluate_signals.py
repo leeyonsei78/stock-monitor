@@ -115,10 +115,16 @@ def main():
             continue
 
         # 1일차/3일차가 서로 다른 과거 날짜를 가리킬 때 일봉을 한 번만 받아 재사용
+        # period=35(now-70일까지 조회, 2026-11-06 수정) — get_signals_pending_evaluation()의
+        # 후보 조회 범위가 alerted_at>=now-30일이라, 평가가 20일 가까이 밀린 행은 과거
+        # period=10(now-20일)으론 target_date가 조회 범위 밖이라 영구히 "종가 데이터 없음"으로
+        # 보류되다 30일 창을 벗어나는 순간 평가 자체가 조용히 누락되는 문제가 있었음 — FDR 호출
+        # 비용이 거의 없고 이 경로는 평가가 지연된 경우에만 타므로(정상 스케줄에서는 실시간가
+        # 경로만 사용) 30일 전체를 넉넉히 덮도록 상향
         past_ohlcv: dict = {}
         if (need_1d and target_1d < today_kst_date) or (need_3d and target_3d < today_kst_date):
             try:
-                past_ohlcv = {bar["date"]: bar["close"] for bar in api.get_daily_ohlcv(row["ticker"], period=10)}
+                past_ohlcv = {bar["date"]: bar["close"] for bar in api.get_daily_ohlcv(row["ticker"], period=35)}
             except Exception as e:
                 logger.error(f"[{row['ticker']}] 일봉 조회 실패: {e}")
 
